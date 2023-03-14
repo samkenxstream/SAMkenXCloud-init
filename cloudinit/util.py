@@ -11,6 +11,7 @@
 import contextlib
 import copy as obj_copy
 import email
+import functools
 import glob
 import grp
 import gzip
@@ -33,15 +34,18 @@ import sys
 import time
 from base64 import b64decode, b64encode
 from collections import deque, namedtuple
+from contextlib import suppress
 from errno import EACCES, ENOENT
 from functools import lru_cache, total_ordering
-from typing import Callable, Deque, Dict, List, TypeVar
+from pathlib import Path
+from typing import Callable, Deque, Dict, List, Optional, TypeVar
 from urllib import parse
 
 from cloudinit import features, importer
 from cloudinit import log as logging
 from cloudinit import (
     mergers,
+    net,
     safeyaml,
     subp,
     temp_utils,
@@ -1231,8 +1235,8 @@ def get_fqdn_from_hosts(hostname, filename="/etc/hosts"):
     return fqdn
 
 
-def is_resolvable(name):
-    """determine if a url is resolvable, return a boolean
+def is_resolvable(url) -> bool:
+    """determine if a url's network address is resolvable, return a boolean
     This also attempts to be resilent against dns redirection.
 
     Note, that normal nsswitch resolution is used here.  So in order
@@ -1244,6 +1248,8 @@ def is_resolvable(name):
     be resolved inside the search list.
     """
     global _DNS_REDIRECT_IP
+    parsed_url = parse.urlparse(url)
+    name = parsed_url.hostname
     if _DNS_REDIRECT_IP is None:
         badips = set()
         badnames = (
@@ -1251,7 +1257,7 @@ def is_resolvable(name):
             "example.invalid.",
             "__cloud_init_expected_not_found__",
         )
-        badresults = {}
+        badresults: dict = {}
         for iname in badnames:
             try:
                 result = socket.getaddrinfo(
@@ -1268,12 +1274,14 @@ def is_resolvable(name):
             LOG.debug("detected dns redirection: %s", badresults)
 
     try:
+        # ip addresses need no resolution
+        with suppress(ValueError):
+            if net.is_ip_address(parsed_url.netloc.strip("[]")):
+                return True
         result = socket.getaddrinfo(name, None)
         # check first result's sockaddr field
         addr = result[0][4][0]
-        if addr in _DNS_REDIRECT_IP:
-            return False
-        return True
+        return addr not in _DNS_REDIRECT_IP
     except (socket.gaierror, socket.error):
         return False
 
@@ -1296,7 +1304,7 @@ def is_resolvable_url(url):
         logfunc=LOG.debug,
         msg="Resolving URL: " + url,
         func=is_resolvable,
-        args=(parse.urlparse(url).hostname,),
+        args=(url,),
     )
 
 
@@ -1513,12 +1521,6 @@ def blkid(devs=None, disable_cache=False):
         ret[dev]["DEVNAME"] = dev
 
     return ret
-
-
-def peek_file(fname, max_bytes):
-    LOG.debug("Peeking at %s (max_bytes=%s)", fname, max_bytes)
-    with open(fname, "rb") as ifh:
-        return ifh.read(max_bytes)
 
 
 def uniq_list(in_list):
@@ -1791,12 +1793,41 @@ def json_dumps(data):
     )
 
 
-def ensure_dir(path, mode=None):
+def get_non_exist_parent_dir(path):
+    """Get the last directory in a path that does not exist.
+
+    Example: when path=/usr/a/b and /usr/a does not exis but /usr does,
+    return /usr/a
+    """
+    p_path = os.path.dirname(path)
+    # Check if parent directory of path is root
+    if p_path == os.path.dirname(p_path):
+        return path
+    else:
+        if os.path.isdir(p_path):
+            return path
+        else:
+            return get_non_exist_parent_dir(p_path)
+
+
+def ensure_dir(path, mode=None, user=None, group=None):
     if not os.path.isdir(path):
+        # Get non existed parent dir first before they are created.
+        non_existed_parent_dir = get_non_exist_parent_dir(path)
         # Make the dir and adjust the mode
         with SeLinuxGuard(os.path.dirname(path), recursive=True):
             os.makedirs(path)
         chmod(path, mode)
+        # Change the ownership
+        if user or group:
+            chownbyname(non_existed_parent_dir, user, group)
+            # if path=/usr/a/b/c and non_existed_parent_dir=/usr,
+            # then sub_relative_dir=PosixPath('a/b/c')
+            sub_relative_dir = Path(path.split(non_existed_parent_dir)[1][1:])
+            sub_path = Path(non_existed_parent_dir)
+            for part in sub_relative_dir.parts:
+                sub_path = sub_path.joinpath(part)
+                chownbyname(sub_path, user, group)
     else:
         # Just adjust the mode
         chmod(path, mode)
@@ -2133,6 +2164,8 @@ def write_file(
     preserve_mode=False,
     *,
     ensure_dir_exists=True,
+    user=None,
+    group=None,
 ):
     """
     Writes a file with the given content and sets the file mode as specified.
@@ -2147,6 +2180,8 @@ def write_file(
     @param ensure_dir_exists: If True (the default), ensure that the directory
                               containing `filename` exists before writing to
                               the file.
+    @param user: The user to set on the file.
+    @param group: The group to set on the file.
     """
 
     if preserve_mode:
@@ -2156,7 +2191,7 @@ def write_file(
             pass
 
     if ensure_dir_exists:
-        ensure_dir(os.path.dirname(filename))
+        ensure_dir(os.path.dirname(filename), user=user, group=group)
     if "b" in omode.lower():
         content = encode_text(content)
         write_type = "bytes"
@@ -3063,3 +3098,84 @@ class Version(namedtuple("Version", ["major", "minor", "patch", "rev"])):
         if self.rev > other.rev:
             return 1
         return -1
+
+
+def deprecate(
+    *,
+    deprecated: str,
+    deprecated_version: str,
+    extra_message: Optional[str] = None,
+    schedule: int = 5,
+):
+    """Mark a "thing" as deprecated. Deduplicated deprecations are
+    logged.
+
+    @param deprecated: Noun to be deprecated. Write this as the start
+        of a sentence, with no period. Version and extra message will
+        be appended.
+    @param deprecated_version: The version in which the thing was
+        deprecated
+    @param extra_message: A remedy for the user's problem. A good
+        message will be actionable and specific (i.e., don't use a
+        generic "Use updated key." if the user used a deprecated key).
+        End the string with a period.
+    @param schedule: Manually set the deprecation schedule. Defaults to
+        5 years. Leave a comment explaining your reason for deviation if
+        setting this value.
+
+    Note: uses keyword-only arguments to improve legibility
+    """
+    if not hasattr(deprecate, "_log"):
+        deprecate._log = set()  # type: ignore
+    message = extra_message or ""
+    dedup = hash(deprecated + message + deprecated_version + str(schedule))
+    version = Version.from_str(deprecated_version)
+    version_removed = Version(version.major + schedule, version.minor)
+    if dedup not in deprecate._log:  # type: ignore
+        deprecate._log.add(dedup)  # type: ignore
+        deprecate_msg = (
+            f"{deprecated} is deprecated in "
+            f"{deprecated_version} and scheduled to be removed in "
+            f"{version_removed}. {message}"
+        ).rstrip()
+        if hasattr(LOG, "deprecated"):
+            LOG.deprecated(deprecate_msg)
+        else:
+            LOG.warning(deprecate_msg)
+
+
+def deprecate_call(
+    *, deprecated_version: str, extra_message: str, schedule: int = 5
+):
+    """Mark a "thing" as deprecated. Deduplicated deprecations are
+    logged.
+
+    @param deprecated_version: The version in which the thing was
+        deprecated
+    @param extra_message: A remedy for the user's problem. A good
+        message will be actionable and specific (i.e., don't use a
+        generic "Use updated key." if the user used a deprecated key).
+        End the string with a period.
+    @param schedule: Manually set the deprecation schedule. Defaults to
+        5 years. Leave a comment explaining your reason for deviation if
+        setting this value.
+
+    Note: uses keyword-only arguments to improve legibility
+    """
+
+    def wrapper(func):
+        @functools.wraps(func)
+        def decorator(*args, **kwargs):
+            # don't log message multiple times
+            out = func(*args, **kwargs)
+            deprecate(
+                deprecated_version=deprecated_version,
+                deprecated=func.__name__,
+                extra_message=extra_message,
+                schedule=schedule,
+            )
+            return out
+
+        return decorator
+
+    return wrapper

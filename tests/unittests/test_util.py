@@ -14,6 +14,7 @@ import shutil
 import stat
 import tempfile
 from collections import deque
+from pathlib import Path
 from textwrap import dedent
 from unittest import mock
 from urllib.parse import urlparse
@@ -1755,6 +1756,25 @@ class TestWriteFile(helpers.TestCase):
         self.assertTrue(os.path.isdir(dirname))
         self.assertTrue(os.path.isfile(path))
 
+    def test_dir_ownership(self):
+        """Verifiy that directories is created with appropriate ownership."""
+        dirname = os.path.join(self.tmp, "subdir", "subdir2")
+        path = os.path.join(dirname, "NewFile.txt")
+        contents = "Hey there"
+        user = "foo"
+        group = "foo"
+
+        with mock.patch.object(
+            util, "chownbyname", return_value=None
+        ) as mockobj:
+            util.write_file(path, contents, user=user, group=group)
+
+        calls = [
+            mock.call(os.path.join(self.tmp, "subdir"), user, group),
+            mock.call(Path(dirname), user, group),
+        ]
+        mockobj.assert_has_calls(calls, any_order=False)
+
     def test_dir_is_not_created_if_ensure_dir_false(self):
         """Verify directories are not created if ensure_dir_exists is False."""
         dirname = os.path.join(self.tmp, "subdir")
@@ -2857,7 +2877,7 @@ class TestFindDevs:
                 return msdos
             elif pattern == "/dev/iso9660/*":
                 return iso9660
-            raise Exception
+            raise RuntimeError
 
         m_glob.side_effect = fake_glob
 
@@ -3006,3 +3026,18 @@ class TestVersion:
     )
     def test_from_str(self, str_ver, cls_ver):
         assert util.Version.from_str(str_ver) == cls_ver
+
+
+@pytest.mark.allow_dns_lookup
+class TestResolvable:
+    @mock.patch.object(util, "_DNS_REDIRECT_IP", return_value=True)
+    @mock.patch.object(util.socket, "getaddrinfo")
+    def test_ips_need_not_be_resolved(self, m_getaddr, m_dns):
+        """Optimization test: dns resolution may timeout during early boot, and
+        often the urls being checked use IP addresses rather than dns names.
+        Therefore, the fast path checks if the address contains an IP and exits
+        early if the path is a valid IP.
+        """
+        assert util.is_resolvable("http://169.254.169.254/") is True
+        assert util.is_resolvable("http://[fd00:ec2::254]/") is True
+        assert not m_getaddr.called
