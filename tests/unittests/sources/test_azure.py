@@ -11,11 +11,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from cloudinit import distros, helpers, subp, url_helper
+from cloudinit import distros, dmi, helpers, subp, url_helper
 from cloudinit.net import dhcp
 from cloudinit.sources import UNSET
 from cloudinit.sources import DataSourceAzure as dsaz
 from cloudinit.sources import InvalidMetaDataException
+from cloudinit.sources.azure import errors, identity
 from cloudinit.sources.helpers import netlink
 from cloudinit.util import (
     MountFailedError,
@@ -81,9 +82,9 @@ def mock_azure_report_failure_to_fabric():
 @pytest.fixture
 def mock_chassis_asset_tag():
     with mock.patch.object(
-        dsaz.ChassisAssetTag,
+        identity.ChassisAssetTag,
         "query_system",
-        return_value=dsaz.ChassisAssetTag.AZURE_CLOUD.value,
+        return_value=identity.ChassisAssetTag.AZURE_CLOUD.value,
     ) as m:
         yield m
 
@@ -110,13 +111,14 @@ def mock_time():
 def mock_dmi_read_dmi_data():
     def fake_read(key: str) -> str:
         if key == "system-uuid":
-            return "fake-system-uuid"
+            return "50109936-ef07-47fe-ac82-890c853f60d5"
         elif key == "chassis-asset-tag":
             return "7783-7084-3265-9085-8269-3286-77"
         raise RuntimeError()
 
-    with mock.patch(
-        MOCKPATH + "dmi.read_dmi_data",
+    with mock.patch.object(
+        dmi,
+        "read_dmi_data",
         side_effect=fake_read,
         autospec=True,
     ) as m:
@@ -1029,7 +1031,7 @@ scbus-1 on xpt0 bus 0
                 ),
                 (dsaz.subp, "which", lambda x: True),
                 (
-                    dsaz.dmi,
+                    dmi,
                     "read_dmi_data",
                     self.m_read_dmi_data,
                 ),
@@ -1152,7 +1154,7 @@ scbus-1 on xpt0 bus 0
             m_crawl_metadata.side_effect = Exception
             dsrc.get_data()
             self.assertEqual(1, m_crawl_metadata.call_count)
-            m_report_failure.assert_called_once_with()
+            m_report_failure.assert_called_once_with(mock.ANY)
 
     def test_crawl_metadata_exc_should_log_could_not_crawl_msg(self):
         data = {}
@@ -1162,7 +1164,7 @@ scbus-1 on xpt0 bus 0
             dsrc.get_data()
             self.assertEqual(1, m_crawl_metadata.call_count)
             self.assertIn(
-                "Could not crawl Azure metadata", self.logs.getvalue()
+                "Azure datasource failure occurred:", self.logs.getvalue()
             )
 
     def test_basic_seed_dir(self):
@@ -1773,7 +1775,8 @@ scbus-1 on xpt0 bus 0
             # mock crawl metadata failure to cause report failure
             m_crawl_metadata.side_effect = Exception
 
-            self.assertTrue(dsrc._report_failure())
+            error = errors.ReportableError(reason="foo")
+            self.assertTrue(dsrc._report_failure(error))
             self.assertEqual(1, self.m_report_failure_to_fabric.call_count)
 
     def test_dsaz_report_failure_returns_false_and_does_not_propagate_exc(
@@ -1803,7 +1806,9 @@ scbus-1 on xpt0 bus 0
             # 1. Using cached ephemeral dhcp context to report failure to Azure
             # 2. Using new ephemeral dhcp to report failure to Azure
             self.m_report_failure_to_fabric.side_effect = Exception
-            self.assertFalse(dsrc._report_failure())
+
+            error = errors.ReportableError(reason="foo")
+            self.assertFalse(dsrc._report_failure(error))
             self.assertEqual(2, self.m_report_failure_to_fabric.call_count)
 
     def test_dsaz_report_failure(self):
@@ -1812,9 +1817,10 @@ scbus-1 on xpt0 bus 0
         with mock.patch.object(dsrc, "crawl_metadata") as m_crawl_metadata:
             m_crawl_metadata.side_effect = Exception
 
-            self.assertTrue(dsrc._report_failure())
+            error = errors.ReportableError(reason="foo")
+            self.assertTrue(dsrc._report_failure(error))
             self.m_report_failure_to_fabric.assert_called_once_with(
-                endpoint="168.63.129.16"
+                endpoint="168.63.129.16", error=error
             )
 
     def test_dsaz_report_failure_uses_cached_ephemeral_dhcp_ctx_lease(self):
@@ -1828,11 +1834,12 @@ scbus-1 on xpt0 bus 0
             # mock crawl metadata failure to cause report failure
             m_crawl_metadata.side_effect = Exception
 
-            self.assertTrue(dsrc._report_failure())
+            error = errors.ReportableError(reason="foo")
+            self.assertTrue(dsrc._report_failure(error))
 
             # ensure called with cached ephemeral dhcp lease option 245
             self.m_report_failure_to_fabric.assert_called_once_with(
-                endpoint="test-ep"
+                endpoint="test-ep", error=error
             )
 
     def test_dsaz_report_failure_no_net_uses_new_ephemeral_dhcp_lease(self):
@@ -1849,12 +1856,13 @@ scbus-1 on xpt0 bus 0
             }
             self.m_dhcp.return_value.obtain_lease.return_value = test_lease
 
-            self.assertTrue(dsrc._report_failure())
+            error = errors.ReportableError(reason="foo")
+            self.assertTrue(dsrc._report_failure(error))
 
             # ensure called with the newly discovered
             # ephemeral dhcp lease option 245
             self.m_report_failure_to_fabric.assert_called_once_with(
-                endpoint="1.2.3.4"
+                endpoint="1.2.3.4", error=error
             )
 
     def test_exception_fetching_fabric_data_doesnt_propagate(self):
@@ -2797,8 +2805,10 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
     @mock.patch("cloudinit.url_helper.time.sleep", autospec=True)
     @mock.patch("requests.Session.request", autospec=True)
     @mock.patch(MOCKPATH + "EphemeralDHCPv4", autospec=True)
+    @mock.patch(MOCKPATH + "time", autospec=True)
+    @mock.patch("cloudinit.sources.azure.imds.time", autospec=True)
     def test_check_if_nic_is_primary_retries_on_failures(
-        self, m_dhcpv4, m_request, m_sleep
+        self, m_imds_time, m_time, m_dhcpv4, m_request, m_sleep
     ):
         """Retry polling for network metadata on all failures except timeout
         and network unreachable errors"""
@@ -2814,27 +2824,45 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
         }
 
         m_req = mock.Mock(content=json.dumps({"not": "empty"}))
-        m_request.side_effect = (
+        errors = (
             [requests.Timeout("Fake connection timeout")] * 5
             + [requests.ConnectionError("Fake Network Unreachable")] * 5
-            + 290 * [fake_http_error_for_code(410)]
+            + [fake_http_error_for_code(410)] * 5
             + [m_req]
         )
+        m_request.side_effect = errors
         m_dhcpv4.return_value.lease = lease
+        fake_time = 0.0
+        fake_time_increment = 5.0
+
+        def fake_timer():
+            nonlocal fake_time, fake_time_increment
+            fake_time += fake_time_increment
+            return fake_time
+
+        m_time.side_effect = fake_timer
+        m_imds_time.side_effect = fake_timer
 
         is_primary = dsa._check_if_nic_is_primary("eth0")
         self.assertEqual(True, is_primary)
-        assert len(m_request.mock_calls) == 301
+        assert len(m_request.mock_calls) == len(errors)
 
         # Re-run tests to verify max http failures.
+        attempts = 3
+        fake_time = 0.0
+        fake_time_increment = 300 / attempts
+
+        m_time.side_effect = fake_timer
+        m_imds_time.side_effect = fake_timer
         m_request.reset_mock()
-        m_request.side_effect = 305 * [fake_http_error_for_code(410)]
+        errors = 100 * [fake_http_error_for_code(410)]
+        m_request.side_effect = errors
 
         dsa = dsaz.DataSourceAzure({}, distro=distro, paths=self.paths)
 
         is_primary = dsa._check_if_nic_is_primary("eth1")
         self.assertEqual(False, is_primary)
-        assert len(m_request.mock_calls) == 301
+        assert len(m_request.mock_calls) == attempts
 
         # Re-run tests to verify max connection error retries.
         m_request.reset_mock()
@@ -2846,7 +2874,7 @@ class TestPreprovisioningHotAttachNics(CiTestCase):
 
         is_primary = dsa._check_if_nic_is_primary("eth1")
         self.assertEqual(False, is_primary)
-        assert len(m_request.mock_calls) == 11
+        assert len(m_request.mock_calls) == attempts
 
     @mock.patch("cloudinit.distros.networking.LinuxNetworking.try_set_link_up")
     def test_wait_for_link_up_returns_if_already_up(self, m_is_link_up):
@@ -3147,7 +3175,7 @@ class TestIsPlatformViable:
     @pytest.mark.parametrize(
         "tag",
         [
-            dsaz.ChassisAssetTag.AZURE_CLOUD.value,
+            identity.ChassisAssetTag.AZURE_CLOUD.value,
         ],
     )
     def test_true_on_azure_chassis(
@@ -3224,6 +3252,7 @@ class TestEphemeralNetworking:
 
         assert mock_ephemeral_dhcp_v4.mock_calls == [
             mock.call(
+                azure_ds.distro,
                 iface=iface,
                 dhcp_log_func=dsaz.dhcp_log_cb,
             ),
@@ -3250,6 +3279,7 @@ class TestEphemeralNetworking:
 
         assert mock_ephemeral_dhcp_v4.mock_calls == [
             mock.call(
+                azure_ds.distro,
                 iface=iface,
                 dhcp_log_func=dsaz.dhcp_log_cb,
             ),
@@ -3292,6 +3322,7 @@ class TestEphemeralNetworking:
 
         assert mock_ephemeral_dhcp_v4.mock_calls == [
             mock.call(
+                azure_ds.distro,
                 iface=None,
                 dhcp_log_func=dsaz.dhcp_log_cb,
             ),
@@ -3326,6 +3357,7 @@ class TestEphemeralNetworking:
 
         assert mock_ephemeral_dhcp_v4.mock_calls == [
             mock.call(
+                azure_ds.distro,
                 iface=None,
                 dhcp_log_func=dsaz.dhcp_log_cb,
             ),
@@ -3364,6 +3396,7 @@ class TestEphemeralNetworking:
             mock_ephemeral_dhcp_v4.mock_calls
             == [
                 mock.call(
+                    azure_ds.distro,
                     iface=None,
                     dhcp_log_func=dsaz.dhcp_log_cb,
                 ),
@@ -3422,7 +3455,7 @@ class TestInstanceId:
     def test_fallback(self, azure_ds, mock_dmi_read_dmi_data):
         id = azure_ds.get_instance_id()
 
-        assert id == "fake-system-uuid"
+        assert id == "50109936-ef07-47fe-ac82-890c853f60d5"
 
 
 class TestProvisioning:
@@ -3518,9 +3551,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 timeout=2,
                 headers={"Metadata": "true"},
-                retries=10,
                 exception_cb=mock.ANY,
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
             ),
         ]
@@ -3531,6 +3563,7 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             )
@@ -3543,7 +3576,10 @@ class TestProvisioning:
             mock.call("chassis-asset-tag"),
             mock.call("system-uuid"),
         ]
-        assert self.azure_ds.metadata["instance-id"] == "fake-system-uuid"
+        assert (
+            self.azure_ds.metadata["instance-id"]
+            == "50109936-ef07-47fe-ac82-890c853f60d5"
+        )
 
         # Verify IMDS metadata.
         assert self.azure_ds.metadata["imds"] == self.imds_md
@@ -3584,9 +3620,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
             mock.call(
@@ -3603,9 +3638,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
         ]
@@ -3617,10 +3651,12 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             ),
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             ),
@@ -3633,7 +3669,10 @@ class TestProvisioning:
             mock.call("chassis-asset-tag"),
             mock.call("system-uuid"),
         ]
-        assert self.azure_ds.metadata["instance-id"] == "fake-system-uuid"
+        assert (
+            self.azure_ds.metadata["instance-id"]
+            == "50109936-ef07-47fe-ac82-890c853f60d5"
+        )
 
         # Verify IMDS metadata.
         assert self.azure_ds.metadata["imds"] == self.imds_md
@@ -3690,9 +3729,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
             mock.call(
@@ -3700,9 +3738,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=300,
                 timeout=2,
             ),
             mock.call(
@@ -3719,9 +3756,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
         ]
@@ -3733,10 +3769,12 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             ),
             mock.call(
+                self.azure_ds.distro,
                 "ethAttached1",
                 dsaz.dhcp_log_cb,
             ),
@@ -3749,7 +3787,10 @@ class TestProvisioning:
             mock.call("chassis-asset-tag"),
             mock.call("system-uuid"),
         ]
-        assert self.azure_ds.metadata["instance-id"] == "fake-system-uuid"
+        assert (
+            self.azure_ds.metadata["instance-id"]
+            == "50109936-ef07-47fe-ac82-890c853f60d5"
+        )
 
         # Verify IMDS metadata.
         assert self.azure_ds.metadata["imds"] == self.imds_md
@@ -3844,9 +3885,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
             mock.call(
@@ -3854,9 +3894,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=300,
                 timeout=2,
             ),
             mock.call(
@@ -3873,9 +3912,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
         ]
@@ -3887,10 +3925,12 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             ),
             mock.call(
+                self.azure_ds.distro,
                 "ethAttached1",
                 dsaz.dhcp_log_cb,
             ),
@@ -3903,7 +3943,10 @@ class TestProvisioning:
             mock.call("chassis-asset-tag"),
             mock.call("system-uuid"),
         ]
-        assert self.azure_ds.metadata["instance-id"] == "fake-system-uuid"
+        assert (
+            self.azure_ds.metadata["instance-id"]
+            == "50109936-ef07-47fe-ac82-890c853f60d5"
+        )
 
         # Verify IMDS metadata.
         assert self.azure_ds.metadata["imds"] == self.imds_md
@@ -3956,9 +3999,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
             mock.call(
@@ -3975,9 +4017,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
         ]
@@ -3988,6 +4029,7 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             ),
@@ -4038,7 +4080,7 @@ class TestProvisioning:
         with mock.patch.object(self.azure_ds, "_report_failure") as m_report:
             self.azure_ds._get_data()
 
-        assert m_report.mock_calls == [mock.call()]
+        assert m_report.mock_calls == [mock.call(mock.ANY)]
 
         assert self.mock_wrapping_setup_ephemeral_networking.mock_calls == [
             mock.call(timeout_minutes=20),
@@ -4075,9 +4117,8 @@ class TestProvisioning:
                 "api-version=2021-08-01&extended=true",
                 exception_cb=mock.ANY,
                 headers={"Metadata": "true"},
-                infinite=False,
+                infinite=True,
                 log_req_resp=True,
-                retries=10,
                 timeout=2,
             ),
         ]
@@ -4091,6 +4132,7 @@ class TestProvisioning:
         ]
         assert self.mock_net_dhcp_maybe_perform_dhcp_discovery.mock_calls == [
             mock.call(
+                self.azure_ds.distro,
                 None,
                 dsaz.dhcp_log_cb,
             )
@@ -4336,6 +4378,3 @@ class TestValidateIMDSMetadata:
         }
 
         assert azure_ds.validate_imds_network_metadata(imds_md) is False
-
-
-# vi: ts=4 expandtab

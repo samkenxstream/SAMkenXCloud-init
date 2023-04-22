@@ -16,7 +16,6 @@ from pathlib import Path
 from time import sleep, time
 from typing import Any, Dict, List, Optional
 
-from cloudinit import dmi
 from cloudinit import log as logging
 from cloudinit import net, sources, ssh_util, subp, util
 from cloudinit.event import EventScope, EventType
@@ -27,12 +26,11 @@ from cloudinit.net.dhcp import (
 )
 from cloudinit.net.ephemeral import EphemeralDHCPv4
 from cloudinit.reporting import events
-from cloudinit.sources.azure import imds
+from cloudinit.sources.azure import errors, identity, imds
 from cloudinit.sources.helpers import netlink
 from cloudinit.sources.helpers.azure import (
     DEFAULT_WIRESERVER_ENDPOINT,
     BrokenAzureDataSource,
-    ChassisAssetTag,
     NonAzureDataSource,
     OvfEnvXml,
     azure_ds_reporter,
@@ -43,7 +41,6 @@ from cloudinit.sources.helpers.azure import (
     get_ip_from_lease_value,
     get_metadata_from_fabric,
     get_system_info,
-    is_byte_swapped,
     push_log_to_kvp,
     report_diagnostic_event,
     report_failure_to_fabric,
@@ -387,6 +384,7 @@ class DataSourceAzure(sources.DataSource):
 
         LOG.debug("Requested ephemeral networking (iface=%s)", iface)
         self._ephemeral_dhcp_ctx = EphemeralDHCPv4(
+            self.distro,
             iface=iface,
             dhcp_log_func=dhcp_log_cb,
         )
@@ -675,9 +673,12 @@ class DataSourceAzure(sources.DataSource):
         return crawled_data
 
     @azure_ds_telemetry_reporter
-    def get_metadata_from_imds(self, retries: int = 10) -> Dict:
+    def get_metadata_from_imds(self) -> Dict:
+        retry_deadline = time() + 300
         try:
-            return imds.fetch_metadata_with_api_fallback(retries=retries)
+            return imds.fetch_metadata_with_api_fallback(
+                retry_deadline=retry_deadline
+            )
         except (UrlError, ValueError) as error:
             report_diagnostic_event(
                 "Ignoring IMDS metadata due to: %s" % error,
@@ -695,7 +696,7 @@ class DataSourceAzure(sources.DataSource):
         """Check platform environment to report if this datasource may
         run.
         """
-        chassis_tag = ChassisAssetTag.query_system()
+        chassis_tag = identity.ChassisAssetTag.query_system()
         if chassis_tag is not None:
             return True
 
@@ -730,11 +731,12 @@ class DataSourceAzure(sources.DataSource):
                 msg="Crawl of metadata service",
                 func=self.crawl_metadata,
             )
-        except Exception as e:
-            report_diagnostic_event(
-                "Could not crawl Azure metadata: %s" % e, logger_func=LOG.error
-            )
-            self._report_failure()
+        except errors.ReportableError as error:
+            self._report_failure(error)
+            return False
+        except Exception as error:
+            reportable_error = errors.ReportableErrorUnhandledException(error)
+            self._report_failure(reportable_error)
             return False
         finally:
             self._teardown_ephemeral_networking()
@@ -857,24 +859,18 @@ class DataSourceAzure(sources.DataSource):
         prev_iid_path = os.path.join(
             self.paths.get_cpath("data"), "instance-id"
         )
-        # Older kernels than 4.15 will have UPPERCASE product_uuid.
-        # We don't want Azure to react to an UPPER/lower difference as a new
-        # instance id as it rewrites SSH host keys.
-        # LP: #1835584
-        system_uuid = dmi.read_dmi_data("system-uuid")
-        if system_uuid is None:
-            raise RuntimeError("failed to read system-uuid")
-
-        iid = system_uuid.lower()
+        system_uuid = identity.query_system_uuid()
         if os.path.exists(prev_iid_path):
             previous = util.load_file(prev_iid_path).strip()
-            if previous.lower() == iid:
-                # If uppercase/lowercase equivalent, return the previous value
-                # to avoid new instance id.
+            swapped_id = identity.byte_swap_system_uuid(system_uuid)
+
+            # Older kernels than 4.15 will have UPPERCASE product_uuid.
+            # We don't want Azure to react to an UPPER/lower difference as
+            # a new instance id as it rewrites SSH host keys.
+            # LP: #1835584
+            if previous.lower() in [system_uuid, swapped_id]:
                 return previous
-            if is_byte_swapped(previous.lower(), iid):
-                return previous
-        return iid
+        return system_uuid
 
     @azure_ds_telemetry_reporter
     def _wait_for_nic_detach(self, nl_sock):
@@ -988,7 +984,7 @@ class DataSourceAzure(sources.DataSource):
         # Primary nic detection will be optimized in the future. The fact that
         # primary nic is being attached first helps here. Otherwise each nic
         # could add several seconds of delay.
-        imds_md = self.get_metadata_from_imds(retries=300)
+        imds_md = self.get_metadata_from_imds()
         if imds_md:
             # Only primary NIC will get a response from IMDS.
             LOG.info("%s is the primary nic", ifname)
@@ -1179,12 +1175,17 @@ class DataSourceAzure(sources.DataSource):
         return reprovision_data
 
     @azure_ds_telemetry_reporter
-    def _report_failure(self) -> bool:
+    def _report_failure(self, error: errors.ReportableError) -> bool:
         """Tells the Azure fabric that provisioning has failed.
 
         @param description: A description of the error encountered.
         @return: The success status of sending the failure signal.
         """
+        report_diagnostic_event(
+            f"Azure datasource failure occurred: {error.as_description()}",
+            logger_func=LOG.error,
+        )
+
         if self._is_ephemeral_networking_up():
             try:
                 report_diagnostic_event(
@@ -1192,7 +1193,9 @@ class DataSourceAzure(sources.DataSource):
                     "to report failure to Azure",
                     logger_func=LOG.debug,
                 )
-                report_failure_to_fabric(endpoint=self._wireserver_endpoint)
+                report_failure_to_fabric(
+                    endpoint=self._wireserver_endpoint, error=error
+                )
                 return True
             except Exception as e:
                 report_diagnostic_event(
@@ -1212,7 +1215,9 @@ class DataSourceAzure(sources.DataSource):
             except NoDHCPLeaseError:
                 # Reporting failure will fail, but it will emit telemetry.
                 pass
-            report_failure_to_fabric(endpoint=self._wireserver_endpoint)
+            report_failure_to_fabric(
+                endpoint=self._wireserver_endpoint, error=error
+            )
             return True
         except Exception as e:
             report_diagnostic_event(
@@ -1941,6 +1946,3 @@ datasources = [
 # Return a list of data sources that match this set of dependencies
 def get_datasource_list(depends):
     return sources.list_from_depends(depends, datasources)
-
-
-# vi: ts=4 expandtab
