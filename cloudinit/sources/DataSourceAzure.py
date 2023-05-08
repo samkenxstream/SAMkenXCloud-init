@@ -26,7 +26,7 @@ from cloudinit.net.dhcp import (
 )
 from cloudinit.net.ephemeral import EphemeralDHCPv4
 from cloudinit.reporting import events
-from cloudinit.sources.azure import errors, identity, imds
+from cloudinit.sources.azure import errors, identity, imds, kvp
 from cloudinit.sources.helpers import netlink
 from cloudinit.sources.helpers.azure import (
     DEFAULT_WIRESERVER_ENDPOINT,
@@ -1182,9 +1182,10 @@ class DataSourceAzure(sources.DataSource):
         @return: The success status of sending the failure signal.
         """
         report_diagnostic_event(
-            f"Azure datasource failure occurred: {error.as_description()}",
+            f"Azure datasource failure occurred: {error.as_encoded_report()}",
             logger_func=LOG.error,
         )
+        kvp.report_failure_to_host(error)
 
         if self._is_ephemeral_networking_up():
             try:
@@ -1239,6 +1240,8 @@ class DataSourceAzure(sources.DataSource):
 
         :returns: List of SSH keys, if requested.
         """
+        kvp.report_success_to_host()
+
         try:
             data = get_metadata_from_fabric(
                 endpoint=self._wireserver_endpoint,
