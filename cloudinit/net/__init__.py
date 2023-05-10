@@ -11,7 +11,7 @@ import ipaddress
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from cloudinit import subp, util
@@ -516,29 +516,19 @@ def find_candidate_nics_on_linux(
     # and ignore interfaces that are definitely disconnected
     connected = []
     possibly_connected = []
-    for interface in get_devicelist():
+    for interface, _, _, _ in get_interfaces(
+        blacklist_drivers=blacklist_drivers,
+        filter_openvswitch_internal=False,
+        filter_slave_if_master_not_bridge_bond_openvswitch=False,
+        filter_vlan=False,
+        filter_without_own_mac=False,
+        filter_zero_mac=False,
+        log_filtered_reasons=True,
+    ):
         if interface == "lo":
-            continue
-        driver = device_driver(interface)
-        if driver in blacklist_drivers:
-            LOG.debug(
-                "Ignoring interface with %s driver: %s", driver, interface
-            )
-            continue
-        if not read_sys_net_safe(interface, "address"):
-            LOG.debug("Ignoring interface without mac: %s", interface)
             continue
         if interface.startswith("veth"):
             LOG.debug("Ignoring veth interface: %s", interface)
-            continue
-        if is_bridge(interface):
-            LOG.debug("Ignoring bridge interface: %s", interface)
-            continue
-        if is_bond(interface):
-            LOG.debug("Ignoring bond interface: %s", interface)
-            continue
-        if is_netfailover(interface):
-            LOG.debug("Ignoring failover interface: %s", interface)
             continue
         carrier = read_sys_net_int(interface, "carrier")
         if carrier:
@@ -1004,40 +994,11 @@ def get_interfaces_by_mac_on_linux(blacklist_drivers=None) -> dict:
 
     Bridges and any devices that have a 'stolen' mac are excluded."""
     ret: dict = {}
-    driver_map: dict = {}
+
     for name, mac, driver, _devid in get_interfaces(
         blacklist_drivers=blacklist_drivers
     ):
         if mac in ret:
-            raise_duplicate_mac_error = True
-            msg = "duplicate mac found! both '%s' and '%s' have mac '%s'." % (
-                name,
-                ret[mac],
-                mac,
-            )
-            # Hyper-V netvsc driver will register a VF with the same mac
-            #
-            # The VF will be enslaved to the master nic shortly after
-            # registration. If cloud-init starts enumerating the interfaces
-            # before the completion of the enslaving process, it will see
-            # two different nics with duplicate mac. Cloud-init should ignore
-            # the slave nic (which does not have hv_netvsc driver).
-            if driver != driver_map[mac]:
-                if driver_map[mac] == "hv_netvsc":
-                    LOG.warning(
-                        msg + " Ignoring '%s' due to driver '%s' and "
-                        "'%s' having driver hv_netvsc."
-                        % (name, driver, ret[mac])
-                    )
-                    continue
-                if driver == "hv_netvsc":
-                    raise_duplicate_mac_error = False
-                    LOG.warning(
-                        msg + " Ignoring '%s' due to driver '%s' and "
-                        "'%s' having driver hv_netvsc."
-                        % (ret[mac], driver_map[mac], name)
-                    )
-
             # This is intended to be a short-term fix of LP: #1997922
             # Long term, we should better handle configuration of virtual
             # devices where duplicate MACs are expected early in boot if
@@ -1054,11 +1015,14 @@ def get_interfaces_by_mac_on_linux(blacklist_drivers=None) -> dict:
                 )
                 continue
 
-            if raise_duplicate_mac_error:
-                raise RuntimeError(msg)
+            msg = "duplicate mac found! both '%s' and '%s' have mac '%s'." % (
+                name,
+                ret[mac],
+                mac,
+            )
+            raise RuntimeError(msg)
 
         ret[mac] = name
-        driver_map[mac] = driver
 
         # Pretend that an Infiniband GUID is an ethernet address for Openstack
         # configuration purposes
@@ -1098,10 +1062,20 @@ def get_interfaces_by_mac_on_linux(blacklist_drivers=None) -> dict:
     return ret
 
 
-def get_interfaces(blacklist_drivers=None) -> list:
+def get_interfaces(
+    blacklist_drivers=None,
+    filter_hyperv_vf_with_synthetic: bool = True,
+    filter_openvswitch_internal: bool = True,
+    filter_slave_if_master_not_bridge_bond_openvswitch: bool = True,
+    filter_vlan: bool = True,
+    filter_without_own_mac: bool = True,
+    filter_zero_mac: bool = True,
+    log_filtered_reasons: bool = False,
+) -> list:
     """Return list of interface tuples (name, mac, driver, device_id)
 
     Bridges and any devices that have a 'stolen' mac are excluded."""
+    filtered_logger = LOG.debug if log_filtered_reasons else lambda *args: None
     ret = []
     if blacklist_drivers is None:
         blacklist_drivers = []
@@ -1109,36 +1083,95 @@ def get_interfaces(blacklist_drivers=None) -> list:
     # 16 somewhat arbitrarily chosen.  Normally a mac is 6 '00:' tokens.
     zero_mac = ":".join(("00",) * 16)
     for name in devs:
-        if not interface_has_own_mac(name):
+        if filter_without_own_mac and not interface_has_own_mac(name):
             continue
         if is_bridge(name):
+            filtered_logger("Ignoring bridge interface: %s", name)
             continue
-        if is_vlan(name):
+        if filter_vlan and is_vlan(name):
             continue
         if is_bond(name):
+            filtered_logger("Ignoring bond interface: %s", name)
             continue
-        if get_master(name) is not None:
-            if not master_is_bridge_or_bond(
-                name
-            ) and not master_is_openvswitch(name):
-                continue
+        if (
+            filter_slave_if_master_not_bridge_bond_openvswitch
+            and get_master(name) is not None
+            and not master_is_bridge_or_bond(name)
+            and not master_is_openvswitch(name)
+        ):
+            continue
         if is_netfailover(name):
+            filtered_logger("Ignoring failover interface: %s", name)
             continue
         mac = get_interface_mac(name)
         # some devices may not have a mac (tun0)
         if not mac:
+            filtered_logger("Ignoring interface without mac: %s", name)
             continue
         # skip nics that have no mac (00:00....)
-        if name != "lo" and mac == zero_mac[: len(mac)]:
+        if filter_zero_mac and name != "lo" and mac == zero_mac[: len(mac)]:
             continue
-        if is_openvswitch_internal_interface(name):
+        if filter_openvswitch_internal and is_openvswitch_internal_interface(
+            name
+        ):
             continue
         # skip nics that have drivers blacklisted
         driver = device_driver(name)
         if driver in blacklist_drivers:
+            filtered_logger(
+                "Ignoring interface with %s driver: %s", driver, name
+            )
             continue
+
         ret.append((name, mac, driver, device_devid(name)))
+
+    # Last-pass filter(s) which need the full device list to perform properly.
+    if filter_hyperv_vf_with_synthetic:
+        filter_hyperv_vf_with_synthetic_interface(filtered_logger, ret)
+
     return ret
+
+
+def filter_hyperv_vf_with_synthetic_interface(
+    filtered_logger: Callable[..., None],
+    interfaces: List[Tuple[str, str, str, str]],
+) -> None:
+    """Filter Hyper-V SR-IOV/VFs when used with synthetic hv_netvsc.
+
+    Hyper-V's netvsc driver may register an SR-IOV/VF interface with a mac
+    that matches the synthetic (hv_netvsc) interface.  This VF will be
+    enslaved to the synthetic interface, but cloud-init may be racing this
+    process.  The [perhaps-yet-to-be-enslaved] VF should never be directly
+    configured, so we filter interfaces that duplicate any hv_netvsc mac
+    address, as this the most reliable indicator that it is meant to be
+    subordinate to the synthetic interface.
+
+    VF drivers will be mlx4_core, mlx5_core, or mana.  However, given that
+    this list of drivers has changed over time and mana's dependency on
+    hv_netvsc is expected to be removed in the future, we no longer rely
+    on these names. Note that this will not affect mlx4/5 instances outside
+    of Hyper-V, as it only affects environments where hv_netvsc is present.
+    """
+    hv_netvsc_mac_to_name = {
+        i[1]: i[0] for i in interfaces if i[2] == "hv_netvsc"
+    }
+    interfaces_to_remove = [
+        i
+        for i in interfaces
+        if i[1] in hv_netvsc_mac_to_name and i[2] != "hv_netvsc"
+    ]
+
+    for interface in interfaces_to_remove:
+        name, mac, driver, _ = interface
+        filtered_logger(
+            "Ignoring %r VF interface with driver %r due to "
+            "synthetic hv_netvsc interface %r with mac address %r.",
+            name,
+            driver,
+            hv_netvsc_mac_to_name[mac],
+            mac,
+        )
+        interfaces.remove(interface)
 
 
 def get_ib_hwaddrs_by_interface():
