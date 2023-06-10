@@ -17,7 +17,7 @@ from cloudinit.reporting.handlers import HyperVKvpReportingHandler
 from cloudinit.sources import UNSET
 from cloudinit.sources import DataSourceAzure as dsaz
 from cloudinit.sources import InvalidMetaDataException
-from cloudinit.sources.azure import errors, identity
+from cloudinit.sources.azure import errors, identity, imds
 from cloudinit.sources.helpers import netlink
 from cloudinit.util import (
     MountFailedError,
@@ -130,6 +130,16 @@ def mock_dmi_read_dmi_data():
 def mock_ephemeral_dhcp_v4():
     with mock.patch(
         MOCKPATH + "EphemeralDHCPv4",
+        autospec=True,
+    ) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_imds_fetch_metadata_with_api_fallback():
+    with mock.patch.object(
+        imds,
+        "fetch_metadata_with_api_fallback",
         autospec=True,
     ) as m:
         yield m
@@ -881,7 +891,6 @@ class TestNetworkConfig:
 
 
 class TestAzureDataSource(CiTestCase):
-
     with_logs = True
 
     def setUp(self):
@@ -2211,6 +2220,7 @@ class TestReadAzureOvf(CiTestCase):
 
 
 class TestCanDevBeReformatted(CiTestCase):
+    with_logs = True
     warning_file = "dataloss_warning_readme.txt"
 
     def _domock(self, mockpath, sattr=None):
@@ -2240,6 +2250,51 @@ class TestCanDevBeReformatted(CiTestCase):
             # return sorted by partition number
             return sorted(ret, key=lambda d: d[0])
 
+        def has_ntfs_fs(device):
+            return bypath.get(device, {}).get("fs") == "ntfs"
+
+        p = MOCKPATH
+        self._domock(p + "_partitions_on_device", "m_partitions_on_device")
+        self._domock(p + "_has_ntfs_filesystem", "m_has_ntfs_filesystem")
+        self._domock(p + "os.path.realpath", "m_realpath")
+        self._domock(p + "os.path.exists", "m_exists")
+        self._domock(p + "util.SeLinuxGuard", "m_selguard")
+
+        self.m_exists.side_effect = lambda p: p in bypath
+        self.m_realpath.side_effect = realpath
+        self.m_has_ntfs_filesystem.side_effect = has_ntfs_fs
+        self.m_partitions_on_device.side_effect = partitions_on_device
+        self.m_selguard.__enter__ = mock.Mock(return_value=False)
+        self.m_selguard.__exit__ = mock.Mock()
+
+        return bypath
+
+    M_PATH = "cloudinit.util."
+
+    @mock.patch(M_PATH + "subp.subp")
+    def test_ntfs_mount_logs(self, m_subp):
+        """can_dev_be_reformatted does not log errors in case of
+        unknown filesystem 'ntfs'."""
+        self.patchup(
+            {
+                "/dev/sda": {
+                    "partitions": {
+                        "/dev/fake0": {"num": 1, "fs": "ntfs", "files": []}
+                    }
+                }
+            }
+        )
+
+        log_msg = "Failed to mount device"
+
+        m_subp.side_effect = subp.ProcessExecutionError(
+            "", "unknown filesystem type 'ntfs'"
+        )
+
+        dsaz.can_dev_be_reformatted("/dev/sda", preserve_ntfs=False)
+        self.assertNotIn(log_msg, self.logs.getvalue())
+
+    def _domock_mount_cb(self, bypath):
         def mount_cb(
             device, callback, mtype, update_env_for_mount, log_error=False
         ):
@@ -2250,28 +2305,13 @@ class TestCanDevBeReformatted(CiTestCase):
                 write_file(os.path.join(p, f), content=f)
             return callback(p)
 
-        def has_ntfs_fs(device):
-            return bypath.get(device, {}).get("fs") == "ntfs"
-
         p = MOCKPATH
-        self._domock(p + "_partitions_on_device", "m_partitions_on_device")
-        self._domock(p + "_has_ntfs_filesystem", "m_has_ntfs_filesystem")
         self._domock(p + "util.mount_cb", "m_mount_cb")
-        self._domock(p + "os.path.realpath", "m_realpath")
-        self._domock(p + "os.path.exists", "m_exists")
-        self._domock(p + "util.SeLinuxGuard", "m_selguard")
-
-        self.m_exists.side_effect = lambda p: p in bypath
-        self.m_realpath.side_effect = realpath
-        self.m_has_ntfs_filesystem.side_effect = has_ntfs_fs
         self.m_mount_cb.side_effect = mount_cb
-        self.m_partitions_on_device.side_effect = partitions_on_device
-        self.m_selguard.__enter__ = mock.Mock(return_value=False)
-        self.m_selguard.__exit__ = mock.Mock()
 
     def test_three_partitions_is_false(self):
         """A disk with 3 partitions can not be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2282,6 +2322,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2290,7 +2331,8 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_no_partitions_is_false(self):
         """A disk with no partitions can not be formatted."""
-        self.patchup({"/dev/sda": {}})
+        bypath = self.patchup({"/dev/sda": {}})
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2299,7 +2341,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_two_partitions_not_ntfs_false(self):
         """2 partitions and 2nd not ntfs can not be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2309,6 +2351,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2317,7 +2360,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_two_partitions_ntfs_populated_false(self):
         """2 partitions and populated ntfs fs on 2nd can not be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2331,6 +2374,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2339,7 +2383,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_two_partitions_ntfs_empty_is_true(self):
         """2 partitions and empty ntfs fs on 2nd can be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2349,6 +2393,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2357,7 +2402,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_one_partition_not_ntfs_false(self):
         """1 partition witih fs other than ntfs can not be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2366,6 +2411,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2374,7 +2420,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_one_partition_ntfs_populated_false(self):
         """1 mountable ntfs partition with many files can not be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2387,6 +2433,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         with mock.patch.object(dsaz.LOG, "warning") as warning:
             value, msg = dsaz.can_dev_be_reformatted(
                 "/dev/sda", preserve_ntfs=False
@@ -2400,7 +2447,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_one_partition_ntfs_empty_is_true(self):
         """1 mountable ntfs partition and no files can be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2409,6 +2456,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2417,7 +2465,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_one_partition_ntfs_empty_with_dataloss_file_is_true(self):
         """1 mountable ntfs partition and only warn file can be formatted."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2430,6 +2478,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=False
         )
@@ -2439,7 +2488,7 @@ class TestCanDevBeReformatted(CiTestCase):
     def test_one_partition_through_realpath_is_true(self):
         """A symlink to a device with 1 ntfs partition can be formatted."""
         epath = "/dev/disk/cloud/azure_resource"
-        self.patchup(
+        bypath = self.patchup(
             {
                 epath: {
                     "realpath": "/dev/sdb",
@@ -2455,6 +2504,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(epath, preserve_ntfs=False)
         self.assertTrue(value)
         self.assertIn("safe for", msg.lower())
@@ -2462,7 +2512,7 @@ class TestCanDevBeReformatted(CiTestCase):
     def test_three_partition_through_realpath_is_false(self):
         """A symlink to a device with 3 partitions can not be formatted."""
         epath = "/dev/disk/cloud/azure_resource"
-        self.patchup(
+        bypath = self.patchup(
             {
                 epath: {
                     "realpath": "/dev/sdb",
@@ -2490,13 +2540,14 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(epath, preserve_ntfs=False)
         self.assertFalse(value)
         self.assertIn("3 or more", msg.lower())
 
     def test_ntfs_mount_errors_true(self):
         """can_dev_be_reformatted does not fail if NTFS is unknown fstype."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2505,6 +2556,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
 
         error_msgs = [
             "Stderr: mount: unknown filesystem type 'ntfs'",  # RHEL
@@ -2525,7 +2577,7 @@ class TestCanDevBeReformatted(CiTestCase):
 
     def test_never_destroy_ntfs_config_false(self):
         """Normally formattable situation with never_destroy_ntfs set."""
-        self.patchup(
+        bypath = self.patchup(
             {
                 "/dev/sda": {
                     "partitions": {
@@ -2538,6 +2590,7 @@ class TestCanDevBeReformatted(CiTestCase):
                 }
             }
         )
+        self._domock_mount_cb(bypath)
         value, msg = dsaz.can_dev_be_reformatted(
             "/dev/sda", preserve_ntfs=True
         )
@@ -3101,6 +3154,7 @@ class TestAzureDataSourcePreprovisioning(CiTestCase):
         self.assertTrue(len(dsa._poll_imds()) > 0)
         self.assertEqual(m_dhcp.call_count, 1)
         m_net.assert_any_call(
+            dsa.distro,
             broadcast="192.168.2.255",
             interface="eth9",
             ip="192.168.2.9",
@@ -3135,6 +3189,7 @@ class TestAzureDataSourcePreprovisioning(CiTestCase):
         self.assertEqual(cfg["system_info"]["default_user"]["name"], username)
         self.assertEqual(m_dhcp.call_count, 1)
         m_net.assert_any_call(
+            dsa.distro,
             broadcast="192.168.2.255",
             interface="eth9",
             ip="192.168.2.9",
@@ -3146,7 +3201,6 @@ class TestAzureDataSourcePreprovisioning(CiTestCase):
 
 
 class TestRemoveUbuntuNetworkConfigScripts(CiTestCase):
-
     with_logs = True
 
     def setUp(self):
@@ -3337,6 +3391,7 @@ class TestEphemeralNetworking:
         self,
         azure_ds,
         mock_ephemeral_dhcp_v4,
+        mock_kvp_report_failure_to_host,
         mock_sleep,
     ):
         lease = {
@@ -3361,6 +3416,12 @@ class TestEphemeralNetworking:
         assert mock_sleep.mock_calls == [mock.call(1)]
         assert azure_ds._wireserver_endpoint == "168.63.129.16"
         assert azure_ds._ephemeral_dhcp_ctx.iface == "fakeEth0"
+
+        error_reasons = [
+            c[0][0].reason
+            for c in mock_kvp_report_failure_to_host.call_args_list
+        ]
+        assert error_reasons == ["failure to find DHCP interface"]
 
     def test_retry_process_error(
         self,
@@ -3403,14 +3464,20 @@ class TestEphemeralNetworking:
         ]
 
     @pytest.mark.parametrize(
-        "error_class", [dhcp.NoDHCPLeaseInterfaceError, dhcp.NoDHCPLeaseError]
+        "error_class,error_reason",
+        [
+            (dhcp.NoDHCPLeaseInterfaceError, "failure to find DHCP interface"),
+            (dhcp.NoDHCPLeaseError, "failure to obtain DHCP lease"),
+        ],
     )
     def test_retry_sleeps(
         self,
         azure_ds,
         mock_ephemeral_dhcp_v4,
+        mock_kvp_report_failure_to_host,
         mock_sleep,
         error_class,
+        error_reason,
     ):
         lease = {
             "interface": "fakeEth0",
@@ -3436,30 +3503,41 @@ class TestEphemeralNetworking:
         assert azure_ds._wireserver_endpoint == "168.63.129.16"
         assert azure_ds._ephemeral_dhcp_ctx.iface == "fakeEth0"
 
+        error_reasons = [
+            c[0][0].reason
+            for c in mock_kvp_report_failure_to_host.call_args_list
+        ]
+        assert error_reasons == [error_reason] * 10
+
     @pytest.mark.parametrize(
-        "error_class", [dhcp.NoDHCPLeaseInterfaceError, dhcp.NoDHCPLeaseError]
+        "error_class,error_reason",
+        [
+            (dhcp.NoDHCPLeaseInterfaceError, "failure to find DHCP interface"),
+            (dhcp.NoDHCPLeaseError, "failure to obtain DHCP lease"),
+        ],
     )
     def test_retry_times_out(
         self,
         azure_ds,
         mock_ephemeral_dhcp_v4,
+        mock_kvp_report_failure_to_host,
         mock_sleep,
         mock_time,
         error_class,
+        error_reason,
     ):
         mock_time.side_effect = [
             0.0,  # start
-            60.1,  # first
-            120.1,  # third
-            180.1,  # timeout
+            60.1,  # duration check for host error report
+            60.11,  # loop check
+            120.1,  # duration check for host error report
+            120.11,  # loop check
+            180.1,  # duration check for host error report
+            180.11,  # loop check timeout
         ]
         mock_ephemeral_dhcp_v4.return_value.obtain_lease.side_effect = [
             error_class()
-        ] * 10 + [
-            {
-                "interface": "fakeEth0",
-            }
-        ]
+        ] * 3
 
         with pytest.raises(dhcp.NoDHCPLeaseError):
             azure_ds._setup_ephemeral_networking(timeout_minutes=3)
@@ -3471,6 +3549,12 @@ class TestEphemeralNetworking:
         assert mock_sleep.mock_calls == [mock.call(1)] * 2
         assert azure_ds._wireserver_endpoint == "168.63.129.16"
         assert azure_ds._ephemeral_dhcp_ctx is None
+
+        error_reasons = [
+            c[0][0].reason
+            for c in mock_kvp_report_failure_to_host.call_args_list
+        ]
+        assert error_reasons == [error_reason] * 3
 
 
 class TestInstanceId:
@@ -4138,7 +4222,7 @@ class TestProvisioning:
         assert self.mock_netlink.mock_calls == []
 
         # Verify reports via KVP.
-        assert len(self.mock_kvp_report_failure_to_host.mock_calls) == 1
+        assert len(self.mock_kvp_report_failure_to_host.mock_calls) == 2
         assert len(self.mock_kvp_report_success_to_host.mock_calls) == 0
 
     @pytest.mark.parametrize(
@@ -4214,6 +4298,79 @@ class TestProvisioning:
         assert len(self.mock_kvp_report_success_to_host.mock_calls) == 1
 
 
+class TestGetMetadataFromImds:
+    @pytest.mark.parametrize("report_failure", [False, True])
+    @pytest.mark.parametrize(
+        "exception,reported_error_type",
+        [
+            (
+                url_helper.UrlError(requests.ConnectionError()),
+                errors.ReportableErrorImdsUrlError,
+            ),
+            (
+                ValueError("bad data"),
+                errors.ReportableErrorImdsMetadataParsingException,
+            ),
+        ],
+    )
+    def test_errors(
+        self,
+        azure_ds,
+        exception,
+        mock_azure_report_failure_to_fabric,
+        mock_imds_fetch_metadata_with_api_fallback,
+        mock_kvp_report_failure_to_host,
+        monkeypatch,
+        report_failure,
+        reported_error_type,
+    ):
+        monkeypatch.setattr(
+            azure_ds, "_is_ephemeral_networking_up", lambda: True
+        )
+        mock_imds_fetch_metadata_with_api_fallback.side_effect = exception
+
+        assert (
+            azure_ds.get_metadata_from_imds(report_failure=report_failure)
+            == {}
+        )
+        assert mock_imds_fetch_metadata_with_api_fallback.mock_calls == [
+            mock.call(retry_deadline=mock.ANY)
+        ]
+
+        reported_error = mock_kvp_report_failure_to_host.call_args[0][0]
+        assert isinstance(reported_error, reported_error_type)
+        assert reported_error.supporting_data["exception"] == repr(exception)
+        assert mock_kvp_report_failure_to_host.mock_calls == [
+            mock.call(reported_error)
+        ]
+        if report_failure:
+            assert mock_azure_report_failure_to_fabric.mock_calls == [
+                mock.call(endpoint=mock.ANY, error=reported_error)
+            ]
+        else:
+            assert mock_azure_report_failure_to_fabric.mock_calls == []
+
+
+class TestReportFailure:
+    @pytest.mark.parametrize("kvp_enabled", [False, True])
+    def report_host_only_kvp_enabled(
+        self,
+        azure_ds,
+        kvp_enabled,
+        mock_azure_report_failure_to_fabric,
+        mock_kvp_report_failure_to_host,
+        mock_kvp_report_success_to_host,
+    ):
+        mock_kvp_report_failure_to_host.return_value = kvp_enabled
+        error = errors.ReportableError(reason="foo")
+
+        assert azure_ds._report_failure(error, host_only=True) == kvp_enabled
+
+        assert mock_kvp_report_failure_to_host.mock_calls == [mock.call(error)]
+        assert mock_kvp_report_success_to_host.mock_calls == []
+        assert mock_azure_report_failure_to_fabric.mock_calls == []
+
+
 class TestValidateIMDSMetadata:
     @pytest.mark.parametrize(
         "mac,expected",
@@ -4245,7 +4402,6 @@ class TestValidateIMDSMetadata:
     def test_validates_one_nic(
         self, azure_ds, mock_get_interfaces, mock_get_interface_mac
     ):
-
         mock_get_interfaces.return_value = [
             ("dummy0", "9e:65:d6:19:19:01", None, None),
             ("test0", "00:11:22:33:44:55", "hv_netvsc", "0x3"),
@@ -4280,7 +4436,6 @@ class TestValidateIMDSMetadata:
     def test_validates_multiple_nic(
         self, azure_ds, mock_get_interfaces, mock_get_interface_mac
     ):
-
         mock_get_interfaces.return_value = [
             ("dummy0", "9e:65:d6:19:19:01", None, None),
             ("test0", "00:11:22:33:44:55", "hv_netvsc", "0x3"),
@@ -4331,7 +4486,6 @@ class TestValidateIMDSMetadata:
     def test_missing_all(
         self, azure_ds, caplog, mock_get_interfaces, mock_get_interface_mac
     ):
-
         mock_get_interfaces.return_value = [
             ("dummy0", "9e:65:d6:19:19:01", None, None),
             ("test0", "00:11:22:33:44:55", "hv_netvsc", "0x3"),
@@ -4354,7 +4508,6 @@ class TestValidateIMDSMetadata:
     def test_missing_primary(
         self, azure_ds, caplog, mock_get_interfaces, mock_get_interface_mac
     ):
-
         mock_get_interfaces.return_value = [
             ("dummy0", "9e:65:d6:19:19:01", None, None),
             ("test0", "00:11:22:33:44:55", "hv_netvsc", "0x3"),
@@ -4402,7 +4555,6 @@ class TestValidateIMDSMetadata:
     def test_missing_secondary(
         self, azure_ds, mock_get_interfaces, mock_get_interface_mac
     ):
-
         mock_get_interfaces.return_value = [
             ("dummy0", "9e:65:d6:19:19:01", None, None),
             ("test0", "00:11:22:33:44:55", "hv_netvsc", "0x3"),

@@ -371,7 +371,8 @@ class DataSourceAzure(sources.DataSource):
         )
 
         lease = None
-        timeout = timeout_minutes * 60 + time()
+        start_time = time()
+        deadline = start_time + timeout_minutes * 60
         with events.ReportEventStack(
             name="obtain-dhcp-lease",
             description="obtain dhcp lease",
@@ -385,6 +386,12 @@ class DataSourceAzure(sources.DataSource):
                     report_diagnostic_event(
                         "Interface not found for DHCP", logger_func=LOG.warning
                     )
+                    self._report_failure(
+                        errors.ReportableErrorDhcpInterfaceNotFound(
+                            duration=time() - start_time
+                        ),
+                        host_only=True,
+                    )
                 except NoDHCPLeaseMissingDhclientError:
                     # No dhclient, no point in retrying.
                     report_diagnostic_event(
@@ -397,6 +404,12 @@ class DataSourceAzure(sources.DataSource):
                     report_diagnostic_event(
                         "Failed to obtain DHCP lease (iface=%s)" % iface,
                         logger_func=LOG.error,
+                    )
+                    self._report_failure(
+                        errors.ReportableErrorDhcpLease(
+                            duration=time() - start_time, interface=iface
+                        ),
+                        host_only=True,
                     )
                 except subp.ProcessExecutionError as error:
                     # udevadm settle, ip link set dev eth0 up, etc.
@@ -412,8 +425,8 @@ class DataSourceAzure(sources.DataSource):
                         logger_func=LOG.error,
                     )
 
-                # Sleep before retrying, otherwise break if we're past timeout.
-                if lease is None and time() + retry_sleep < timeout:
+                # Sleep before retrying, otherwise break if past deadline.
+                if lease is None and time() + retry_sleep < deadline:
                     sleep(retry_sleep)
                 else:
                     break
@@ -530,7 +543,7 @@ class DataSourceAzure(sources.DataSource):
 
         imds_md = {}
         if self._is_ephemeral_networking_up():
-            imds_md = self.get_metadata_from_imds()
+            imds_md = self.get_metadata_from_imds(report_failure=True)
 
         if not imds_md and ovf_source is None:
             msg = "No OVF or IMDS available"
@@ -562,7 +575,7 @@ class DataSourceAzure(sources.DataSource):
 
             md, userdata_raw, cfg, files = self._reprovision()
             # fetch metadata again as it has changed after reprovisioning
-            imds_md = self.get_metadata_from_imds()
+            imds_md = self.get_metadata_from_imds(report_failure=True)
 
         # Report errors if IMDS network configuration is missing data.
         self.validate_imds_network_metadata(imds_md=imds_md)
@@ -654,18 +667,33 @@ class DataSourceAzure(sources.DataSource):
         return crawled_data
 
     @azure_ds_telemetry_reporter
-    def get_metadata_from_imds(self) -> Dict:
-        retry_deadline = time() + 300
+    def get_metadata_from_imds(self, report_failure: bool) -> Dict:
+        start_time = time()
+        retry_deadline = start_time + 300
+        error_string: Optional[str] = None
+        error_report: Optional[errors.ReportableError] = None
         try:
             return imds.fetch_metadata_with_api_fallback(
                 retry_deadline=retry_deadline
             )
-        except (UrlError, ValueError) as error:
-            report_diagnostic_event(
-                "Ignoring IMDS metadata due to: %s" % error,
-                logger_func=LOG.warning,
+        except UrlError as error:
+            error_string = str(error)
+            duration = time() - start_time
+            error_report = errors.ReportableErrorImdsUrlError(
+                exception=error, duration=duration
             )
-            return {}
+        except ValueError as error:
+            error_string = str(error)
+            error_report = errors.ReportableErrorImdsMetadataParsingException(
+                exception=error
+            )
+
+        self._report_failure(error_report, host_only=not report_failure)
+        report_diagnostic_event(
+            "Ignoring IMDS metadata due to: %s" % error_string,
+            logger_func=LOG.warning,
+        )
+        return {}
 
     def clear_cached_attrs(self, attr_defaults=()):
         """Reset any cached class attributes to defaults."""
@@ -963,7 +991,7 @@ class DataSourceAzure(sources.DataSource):
         # Primary nic detection will be optimized in the future. The fact that
         # primary nic is being attached first helps here. Otherwise each nic
         # could add several seconds of delay.
-        imds_md = self.get_metadata_from_imds()
+        imds_md = self.get_metadata_from_imds(report_failure=False)
         if imds_md:
             # Only primary NIC will get a response from IMDS.
             LOG.info("%s is the primary nic", ifname)
@@ -1154,17 +1182,26 @@ class DataSourceAzure(sources.DataSource):
         return reprovision_data
 
     @azure_ds_telemetry_reporter
-    def _report_failure(self, error: errors.ReportableError) -> bool:
-        """Tells the Azure fabric that provisioning has failed.
+    def _report_failure(
+        self, error: errors.ReportableError, host_only: bool = False
+    ) -> bool:
+        """Report failure to Azure host and fabric.
 
-        @param description: A description of the error encountered.
+        For errors that may be recoverable (e.g. DHCP), host_only provides a
+        mechanism to report the failure that can be updated later with success.
+        DHCP will not be attempted if host_only=True and networking is down.
+
+        @param error: Error to report.
+        @param host_only: Only report to host (error may be recoverable).
         @return: The success status of sending the failure signal.
         """
         report_diagnostic_event(
             f"Azure datasource failure occurred: {error.as_encoded_report()}",
             logger_func=LOG.error,
         )
-        kvp.report_failure_to_host(error)
+        reported = kvp.report_failure_to_host(error)
+        if host_only:
+            return reported
 
         if self._is_ephemeral_networking_up():
             try:
