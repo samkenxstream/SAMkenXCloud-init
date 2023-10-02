@@ -6,10 +6,10 @@
 """Hetzner Cloud API Documentation
    https://docs.hetzner.cloud/"""
 
+import logging
+
 import cloudinit.sources.helpers.hetzner as hc_helper
-from cloudinit import dmi
-from cloudinit import log as logging
-from cloudinit import net, sources, util
+from cloudinit import dmi, net, sources, util
 from cloudinit.net.dhcp import NoDHCPLeaseError
 from cloudinit.net.ephemeral import EphemeralDHCPv4
 
@@ -86,7 +86,7 @@ class DataSourceHetzner(sources.DataSource):
         # The fallout is that in the event of b64 encoded user-data,
         # /var/lib/cloud-init/cloud-config.txt will not be identical to the
         # user-data provided.  It will be decoded.
-        self.userdata_raw = hc_helper.maybe_b64decode(ud)
+        self.userdata_raw = util.maybe_b64decode(ud)
         self.metadata_full = md
 
         # hostname is name provided by user at launch.  The API enforces it is

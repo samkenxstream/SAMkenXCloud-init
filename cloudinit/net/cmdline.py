@@ -74,7 +74,7 @@ class KlibcNetworkConfigSource(InitramfsNetworkConfigSource):
         """
         if self._files:
             for item in shlex.split(self._cmdline):
-                if item.startswith("ip=") or item.startswith("ip6="):
+                if item.startswith(("ip=", "ip6=")):
                     return True
             if os.path.exists(_OPEN_ISCSI_INTERFACE_FILE):
                 # iBft can configure networking without ip=
@@ -285,6 +285,3 @@ def read_kernel_cmdline_config(cmdline=None):
             return util.load_yaml(_b64dgz(data64))
 
     return None
-
-
-# vi: ts=4 expandtab

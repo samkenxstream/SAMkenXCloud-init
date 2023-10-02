@@ -5,9 +5,10 @@ Notes:
  * Older LXD images may not have updates for cloud-init so NoCloud may
    still be detected on those images.
  * Detect LXD datasource when /dev/lxd/sock is an active socket file.
- * Info on dev-lxd API: https://linuxcontainers.org/lxd/docs/master/dev-lxd
+ * Info on dev-lxd API: https://documentation.ubuntu.com/lxd/en/latest/dev-lxd/
 """
 
+import logging
 import os
 import socket
 import stat
@@ -23,9 +24,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection
 from urllib3.connectionpool import HTTPConnectionPool
 
-from cloudinit import atomic_helper
-from cloudinit import log as logging
-from cloudinit import sources, subp, url_helper, util
+from cloudinit import atomic_helper, sources, subp, url_helper, util
 from cloudinit.net import find_fallback_nic
 
 LOG = logging.getLogger(__name__)
@@ -475,5 +474,3 @@ if __name__ == "__main__":
     print(
         atomic_helper.json_dumps(read_metadata(metadata_keys=MetaDataKeys.ALL))
     )
-
-# vi: ts=4 expandtab

@@ -7,9 +7,8 @@ from collections import namedtuple
 
 import pytest
 
-from cloudinit import helpers
+from cloudinit import helpers, log
 from cloudinit.cmd import main as cli
-from cloudinit.util import load_file, load_json
 from tests.unittests import helpers as test_helpers
 
 mock = test_helpers.mock
@@ -30,6 +29,7 @@ class TestCLI:
         if not sysv_args:
             sysv_args = ["cloud-init"]
         try:
+            log.setup_logging()
             return cli.main(sysv_args=sysv_args)
         except SystemExit as e:
             return e.code
@@ -62,14 +62,18 @@ class TestCLI:
             cli.status_wrapper(name, myargs, data_d, link_d)
         assert [] == my_action.call_args_list
 
-    def test_status_wrapper_init_local_writes_fresh_status_info(self, tmpdir):
+    @mock.patch("cloudinit.cmd.main.atomic_helper.write_json")
+    def test_status_wrapper_init_local_writes_fresh_status_info(
+        self,
+        m_json,
+        tmpdir,
+    ):
         """When running in init-local mode, status_wrapper writes status.json.
 
         Old status and results artifacts are also removed.
         """
         data_d = tmpdir.join("data")
         link_d = tmpdir.join("link")
-        status_link = link_d.join("status.json")
         # Write old artifacts which will be removed or updated.
         for _dir in data_d, link_d:
             test_helpers.populate_dir(
@@ -83,9 +87,10 @@ class TestCLI:
             return "SomeDatasource", ["an error"]
 
         myargs = FakeArgs(("ignored_name", myaction), True, "bogusmode")
+        log.configure_root_logger()
         cli.status_wrapper("init", myargs, data_d, link_d)
         # No errors reported in status
-        status_v1 = load_json(load_file(status_link))["v1"]
+        status_v1 = m_json.call_args_list[1][0][1]["v1"]
         assert ["an error"] == status_v1["init-local"]["errors"]
         assert "SomeDatasource" == status_v1["datasource"]
         assert False is os.path.exists(
@@ -95,7 +100,10 @@ class TestCLI:
             link_d.join("result.json")
         ), "unexpected result.json link found"
 
-    def test_status_wrapper_init_local_honor_cloud_dir(self, mocker, tmpdir):
+    @mock.patch("cloudinit.cmd.main.atomic_helper.write_json")
+    def test_status_wrapper_init_local_honor_cloud_dir(
+        self, m_json, mocker, tmpdir
+    ):
         """When running in init-local mode, status_wrapper honors cloud_dir."""
         cloud_dir = tmpdir.join("cloud")
         paths = helpers.Paths({"cloud_dir": str(cloud_dir)})
@@ -111,8 +119,9 @@ class TestCLI:
 
         myargs = FakeArgs(("ignored_name", myaction), True, "bogusmode")
         cli.status_wrapper("init", myargs, link_d=link_d)  # No explicit data_d
+
         # Access cloud_dir directly
-        status_v1 = load_json(load_file(data_d.join("status.json")))["v1"]
+        status_v1 = m_json.call_args_list[1][0][1]["v1"]
         assert ["an_error"] == status_v1["init-local"]["errors"]
         assert "SomeDatasource" == status_v1["datasource"]
         assert False is os.path.exists(
@@ -178,8 +187,9 @@ class TestCLI:
             "schema",
         ],
     )
+    @mock.patch("cloudinit.stages.Init._read_cfg", return_value={})
     def test_conditional_subcommands_from_entry_point_sys_argv(
-        self, subcommand, capsys, mock_get_user_data_file, tmpdir
+        self, m_read_cfg, subcommand, capsys, mock_get_user_data_file, tmpdir
     ):
         """Subcommands from entry-point are properly parsed from sys.argv."""
         expected_error = f"usage: cloud-init {subcommand}"
@@ -224,7 +234,8 @@ class TestCLI:
         for subcommand in expected_subcommands:
             assert subcommand in err
 
-    def test_wb_schema_subcommand_parser(self, capsys):
+    @mock.patch("cloudinit.stages.Init._read_cfg", return_value={})
+    def test_wb_schema_subcommand_parser(self, m_read_cfg, capsys):
         """The subcommand cloud-init schema calls the correct subparser."""
         exit_code = self._call_main(["cloud-init", "schema"])
         _out, err = capsys.readouterr()
@@ -233,7 +244,7 @@ class TestCLI:
         assert (
             "Error:\n"
             "Expected one of --config-file, --system or --docs arguments\n"
-            == err
+            in err
         )
 
     @pytest.mark.parametrize(
@@ -246,20 +257,20 @@ class TestCLI:
                     "**Supported distros:** almalinux, alpine, centos, "
                     "cloudlinux, cos, debian, eurolinux, fedora, freebsd, "
                     "mariner, miraclelinux, "
-                    "openbsd, openEuler, OpenCloudOS, openmandriva, "
+                    "openbsd, openeuler, OpenCloudOS, openmandriva, "
                     "opensuse, opensuse-microos, opensuse-tumbleweed, "
                     "opensuse-leap, photon, rhel, rocky, sle_hpc, "
                     "sle-micro, sles, TencentOS, ubuntu, virtuozzo",
-                    "**Config schema**:\n    **resize_rootfs:** "
+                    " **resize_rootfs:** ",
                     "(``true``/``false``/``noblock``)",
-                    "**Examples**::\n\n    runcmd:\n        - [ ls, -l, / ]\n",
+                    "runcmd:\n             - [ ls, -l, / ]\n",
                 ],
                 False,
                 id="all_spot_check",
             ),
             pytest.param(
                 ["cc_runcmd"],
-                ["Runcmd\n------\n**Summary:** Run arbitrary commands"],
+                ["\nRuncmd\n------\n\nRun arbitrary commands\n"],
                 False,
                 id="single_spot_check",
             ),
@@ -269,8 +280,8 @@ class TestCLI:
                     "cc_resizefs",
                 ],
                 [
-                    "Runcmd\n------\n**Summary:** Run arbitrary commands",
-                    "Resizefs\n--------\n**Summary:** Resize filesystem",
+                    "\nRuncmd\n------\n\nRun arbitrary commands",
+                    "\nResizefs\n--------\n\nResize filesystem",
                 ],
                 False,
                 id="multiple_spot_check",
@@ -283,7 +294,10 @@ class TestCLI:
             ),
         ],
     )
-    def test_wb_schema_subcommand(self, args, expected_doc_sections, is_error):
+    @mock.patch("cloudinit.stages.Init._read_cfg", return_value={})
+    def test_wb_schema_subcommand(
+        self, m_read_cfg, args, expected_doc_sections, is_error
+    ):
         """Validate that doc content has correct values."""
 
         # Note: patchStdoutAndStderr() is convenient for reducing boilerplate,
@@ -326,6 +340,3 @@ class TestCLI:
         assert "features" == parseargs.action[0]
         assert False is parseargs.debug
         assert False is parseargs.force
-
-
-# : ts=4 expandtab

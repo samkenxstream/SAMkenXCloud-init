@@ -1,13 +1,13 @@
 # This file is part of cloud-init. See LICENSE file for license information.
 
 import copy
-import crypt
 import json
 import os
 import stat
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import passlib.hash
 import pytest
 import requests
 
@@ -520,11 +520,12 @@ EXAMPLE_UUID = "d0df4c54-4ecb-4a4b-9954-5bdf3ed5c3b8"
 
 class TestGenerateNetworkConfig:
     @pytest.mark.parametrize(
-        "label,metadata,expected",
+        "label,metadata,ip_config,expected",
         [
             (
                 "simple interface",
                 NETWORK_METADATA["network"],
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -559,6 +560,7 @@ class TestGenerateNetworkConfig:
                         }
                     ]
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -596,6 +598,7 @@ class TestGenerateNetworkConfig:
                         }
                     ]
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -633,6 +636,7 @@ class TestGenerateNetworkConfig:
                         }
                     ]
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -670,6 +674,7 @@ class TestGenerateNetworkConfig:
                     ]
                     * 3
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -736,10 +741,65 @@ class TestGenerateNetworkConfig:
                         }
                     ]
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
                             "addresses": ["11.0.0.5/24", "12.0.0.6/24"],
+                            "dhcp4": True,
+                            "dhcp4-overrides": {"route-metric": 100},
+                            "dhcp6": True,
+                            "dhcp6-overrides": {"route-metric": 100},
+                            "match": {"macaddress": "00:0d:3a:04:75:98"},
+                            "set-name": "eth0",
+                        }
+                    },
+                    "version": 2,
+                },
+            ),
+            (
+                "secondary IPv4s are not configured",
+                {
+                    "interface": [
+                        {
+                            "macAddress": "000D3A047598",
+                            "ipv6": {
+                                "subnet": [
+                                    {
+                                        "prefix": "10",
+                                        "address": "2001:dead:beef::16",
+                                    }
+                                ],
+                                "ipAddress": [
+                                    {"privateIpAddress": "2001:dead:beef::1"}
+                                ],
+                            },
+                            "ipv4": {
+                                "subnet": [
+                                    {"prefix": "24", "address": "10.0.0.0"},
+                                ],
+                                "ipAddress": [
+                                    {
+                                        "privateIpAddress": "10.0.0.4",
+                                        "publicIpAddress": "104.46.124.81",
+                                    },
+                                    {
+                                        "privateIpAddress": "11.0.0.5",
+                                        "publicIpAddress": "104.46.124.82",
+                                    },
+                                    {
+                                        "privateIpAddress": "12.0.0.6",
+                                        "publicIpAddress": "104.46.124.83",
+                                    },
+                                ],
+                            },
+                        }
+                    ]
+                },
+                False,
+                {
+                    "ethernets": {
+                        "eth0": {
                             "dhcp4": True,
                             "dhcp4-overrides": {"route-metric": 100},
                             "dhcp6": True,
@@ -772,6 +832,7 @@ class TestGenerateNetworkConfig:
                         }
                     ]
                 },
+                True,
                 {
                     "ethernets": {
                         "eth0": {
@@ -787,14 +848,50 @@ class TestGenerateNetworkConfig:
                     "version": 2,
                 },
             ),
+            (
+                "ipv6 secondaries not configured",
+                {
+                    "interface": [
+                        {
+                            "macAddress": "000D3A047598",
+                            "ipv6": {
+                                "subnet": [
+                                    {
+                                        "prefix": "10",
+                                        "address": "2001:dead:beef::16",
+                                    }
+                                ],
+                                "ipAddress": [
+                                    {"privateIpAddress": "2001:dead:beef::1"},
+                                    {"privateIpAddress": "2001:dead:beef::2"},
+                                ],
+                            },
+                        }
+                    ]
+                },
+                False,
+                {
+                    "ethernets": {
+                        "eth0": {
+                            "dhcp4": True,
+                            "dhcp4-overrides": {"route-metric": 100},
+                            "dhcp6": True,
+                            "dhcp6-overrides": {"route-metric": 100},
+                            "match": {"macaddress": "00:0d:3a:04:75:98"},
+                            "set-name": "eth0",
+                        }
+                    },
+                    "version": 2,
+                },
+            ),
         ],
     )
     def test_parsing_scenarios(
-        self, label, mock_get_interfaces, metadata, expected
+        self, label, mock_get_interfaces, metadata, ip_config, expected
     ):
         assert (
             dsaz.generate_network_config_from_instance_network_metadata(
-                metadata
+                metadata, apply_network_config_for_secondary_ips=ip_config
             )
             == expected
         )
@@ -1561,10 +1658,10 @@ scbus-1 on xpt0 bus 0
         # passwd is crypt formated string $id$salt$encrypted
         # encrypting plaintext with salt value of everything up to final '$'
         # should equal that after the '$'
-        pos = defuser["hashed_passwd"].rfind("$") + 1
-        self.assertEqual(
-            defuser["hashed_passwd"],
-            crypt.crypt("mypass", defuser["hashed_passwd"][0:pos]),
+        self.assertTrue(
+            passlib.hash.sha512_crypt.verify(
+                "mypass", defuser["hashed_passwd"]
+            )
         )
 
         assert dsrc.cfg["ssh_pwauth"] is True
@@ -2467,6 +2564,28 @@ class TestCanDevBeReformatted(CiTestCase):
                             "num": 1,
                             "fs": "ntfs",
                             "files": ["dataloss_warning_readme.txt"],
+                        }
+                    }
+                }
+            }
+        )
+        self._domock_mount_cb(bypath)
+        value, msg = dsaz.can_dev_be_reformatted(
+            "/dev/sda", preserve_ntfs=False
+        )
+        self.assertTrue(value)
+        self.assertIn("safe for", msg.lower())
+
+    def test_one_partition_ntfs_empty_with_svi_file_is_true(self):
+        """1 mountable ntfs partition and only warn file can be formatted."""
+        bypath = self.patchup(
+            {
+                "/dev/sda": {
+                    "partitions": {
+                        "/dev/sda1": {
+                            "num": 1,
+                            "fs": "ntfs",
+                            "files": ["System Volume Information"],
                         }
                     }
                 }
@@ -3660,7 +3779,7 @@ class TestProvisioning:
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
                 "api-version=2021-08-01&extended=true",
-                timeout=2,
+                timeout=30,
                 headers={"Metadata": "true"},
                 exception_cb=mock.ANY,
                 infinite=True,
@@ -3737,7 +3856,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/reprovisiondata?"
@@ -3746,7 +3865,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 log_req_resp=False,
                 infinite=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -3755,7 +3874,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
         ]
 
@@ -3850,7 +3969,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -3859,7 +3978,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/reprovisiondata?"
@@ -3868,7 +3987,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 log_req_resp=False,
                 infinite=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -3877,7 +3996,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
         ]
 
@@ -4010,7 +4129,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -4019,7 +4138,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/reprovisiondata?"
@@ -4028,7 +4147,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=False,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -4037,7 +4156,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
         ]
 
@@ -4124,7 +4243,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/reprovisiondata?"
@@ -4133,7 +4252,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=False,
-                timeout=2,
+                timeout=30,
             ),
             mock.call(
                 "http://169.254.169.254/metadata/instance?"
@@ -4142,7 +4261,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
         ]
 
@@ -4249,7 +4368,7 @@ class TestProvisioning:
                 headers={"Metadata": "true"},
                 infinite=True,
                 log_req_resp=True,
-                timeout=2,
+                timeout=30,
             ),
         ]
 
@@ -4290,6 +4409,49 @@ class TestProvisioning:
         # Verify reports via KVP. Ignore failure reported after sleep().
         assert len(self.mock_kvp_report_failure_to_host.mock_calls) == 1
         assert len(self.mock_kvp_report_success_to_host.mock_calls) == 1
+
+    def test_imds_failure_results_in_provisioning_failure(self):
+        self.mock_readurl.side_effect = url_helper.UrlError(
+            requests.ConnectionError(
+                "Failed to establish a new connection: "
+                "[Errno 101] Network is unreachable"
+            )
+        )
+
+        self.mock_azure_get_metadata_from_fabric.return_value = []
+
+        self.azure_ds._check_and_get_data()
+
+        assert self.mock_readurl.mock_calls == [
+            mock.call(
+                "http://169.254.169.254/metadata/instance?"
+                "api-version=2021-08-01&extended=true",
+                timeout=30,
+                headers={"Metadata": "true"},
+                exception_cb=mock.ANY,
+                infinite=True,
+                log_req_resp=True,
+            ),
+        ]
+
+        # Verify DHCP is setup once.
+        assert self.mock_wrapping_setup_ephemeral_networking.mock_calls == [
+            mock.call(timeout_minutes=20)
+        ]
+
+        # Verify reporting ready once.
+        assert self.mock_azure_get_metadata_from_fabric.mock_calls == []
+
+        # Verify netlink.
+        assert self.mock_netlink.mock_calls == []
+
+        # Verify no reported_ready marker written.
+        assert self.wrapped_util_write_file.mock_calls == []
+        assert self.patched_reported_ready_marker_path.exists() is False
+
+        # Verify reports via KVP.
+        assert len(self.mock_kvp_report_failure_to_host.mock_calls) == 1
+        assert len(self.mock_kvp_report_success_to_host.mock_calls) == 0
 
 
 class TestGetMetadataFromImds:
@@ -4580,3 +4742,11 @@ class TestValidateIMDSMetadata:
         }
 
         assert azure_ds.validate_imds_network_metadata(imds_md) is False
+
+
+class TestDependencyFallback:
+    def test_dependency_fallback(self):
+        """Ensure that crypt/passlib import failover gets exercised on all
+        Python versions
+        """
+        assert dsaz.encrypt_pass("`")

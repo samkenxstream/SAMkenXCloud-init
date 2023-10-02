@@ -407,6 +407,11 @@ class TestRenderJinjaPayload(CiTestCase):
 
 
 class TestShellScriptByFrequencyHandlers:
+    @pytest.fixture(autouse=True)
+    def common_mocks(self):
+        with mock.patch("cloudinit.stages.Init._read_cfg", return_value={}):
+            yield
+
     def do_test_frequency(self, frequency):
         ci_paths = read_cfg_paths()
         scripts_dir = ci_paths.get_cpath("scripts")
@@ -422,6 +427,3 @@ class TestShellScriptByFrequencyHandlers:
 
     def test_get_script_folder_per_once(self):
         self.do_test_frequency(PER_ONCE)
-
-
-# vi: ts=4 expandtab

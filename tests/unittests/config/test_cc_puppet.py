@@ -11,6 +11,7 @@ from cloudinit.config.schema import (
     get_schema,
     validate_cloudconfig_schema,
 )
+from cloudinit.distros import PackageInstallerError
 from cloudinit.subp import ProcessExecutionError
 from tests.unittests.helpers import CiTestCase, mock, skipUnlessJsonSchema
 from tests.unittests.util import get_cloud
@@ -77,7 +78,6 @@ class TestManagePuppetServices(CiTestCase):
 
 @mock.patch("cloudinit.config.cc_puppet._manage_puppet_services")
 class TestPuppetHandle(CiTestCase):
-
     with_logs = True
 
     def setUp(self):
@@ -116,7 +116,7 @@ class TestPuppetHandle(CiTestCase):
         cfg = {"puppet": {}}
         cc_puppet.handle("notimportant", cfg, self.cloud, None)
         self.assertEqual(
-            [mock.call(("puppet-agent", None))],
+            [mock.call(["puppet-agent"])],
             self.cloud.distro.install_packages.call_args_list,
         )
 
@@ -128,7 +128,7 @@ class TestPuppetHandle(CiTestCase):
         cfg = {"puppet": {"install": True}}
         cc_puppet.handle("notimportant", cfg, self.cloud, None)
         self.assertIn(
-            [mock.call(("puppet-agent", None))],
+            [mock.call(["puppet-agent"])],
             self.cloud.distro.install_packages.call_args_list,
         )
 
@@ -237,7 +237,7 @@ class TestPuppetHandle(CiTestCase):
         cfg = {"puppet": {"version": "3.8"}}
         cc_puppet.handle("notimportant", cfg, self.cloud, None)
         self.assertEqual(
-            [mock.call(("puppet-agent", "3.8"))],
+            [mock.call([["puppet-agent", "3.8"]])],
             self.cloud.distro.install_packages.call_args_list,
         )
 
@@ -408,7 +408,7 @@ class TestPuppetHandle(CiTestCase):
             "tests.unittests.util.MockDistro.install_packages"
         ) as install_pkg:
             # puppet-agent not installed, but puppet is
-            install_pkg.side_effect = (ProcessExecutionError, 0)
+            install_pkg.side_effect = (PackageInstallerError, 0)
 
             cc_puppet.handle("notimportant", cfg, self.cloud, None)
             expected_calls = [
@@ -464,7 +464,7 @@ class TestInstallPuppetAio:
                 [mock.call([mock.ANY, "--cleanup"], capture=False)],
                 [
                     mock.call(
-                        url="https://raw.githubusercontent.com/puppetlabs/install-puppet/main/install.sh",  # noqa: 501
+                        url="https://raw.githubusercontent.com/puppetlabs/install-puppet/main/install.sh",  # noqa: E501
                         retries=5,
                     )
                 ],

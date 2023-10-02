@@ -6,11 +6,11 @@
 
 """LXD: configure lxd with ``lxd init`` and optionally lxd-bridge"""
 
+import logging
 import os
 from textwrap import dedent
 from typing import List, Tuple
 
-from cloudinit import log as logging
 from cloudinit import safeyaml, subp, util
 from cloudinit.cloud import Cloud
 from cloudinit.config import Config
@@ -216,6 +216,13 @@ def handle(name: str, cfg: Config, cloud: Cloud, args: list) -> None:
     bridge_cfg = lxd_cfg.get("bridge", {})
     supplemental_schema_validation(init_cfg, bridge_cfg, preseed_str)
 
+    if not subp.which("lxd"):
+        try:
+            subp.subp(["snap", "install", "lxd"])
+        except subp.ProcessExecutionError as e:
+            raise RuntimeError(
+                "Failed to install lxd from snap: %s" % e
+            ) from e
     packages = get_required_packages(init_cfg, preseed_str)
     if len(packages):
         try:
@@ -230,7 +237,6 @@ def handle(name: str, cfg: Config, cloud: Cloud, args: list) -> None:
         return
     # Set up lxd if init config is given
     if init_cfg:
-
         # type is known, number of elements is not
         # in the case of the ubuntu+lvm backend workaround
         init_keys: Tuple[str, ...] = (
@@ -298,7 +304,7 @@ def handle(name: str, cfg: Config, cloud: Cloud, args: list) -> None:
                     )
                     + "\n"
                 )
-                subp.subp(["debconf-communicate"], data)
+                subp.subp(["debconf-communicate"], data=data)
             except Exception:
                 util.logexc(
                     LOG, "Failed to run '%s' for lxd with" % dconf_comm
@@ -462,7 +468,7 @@ def maybe_cleanup_default(
     By removing any that lxd-init created, we simply leave the add/attach
     code intact.
 
-    https://github.com/lxc/lxd/issues/4649"""
+    https://github.com/canonical/lxd/issues/4649"""
     if net_name != _DEFAULT_NETWORK_NAME or not did_init:
         return
 
@@ -496,9 +502,6 @@ def maybe_cleanup_default(
 def get_required_packages(init_cfg: dict, preseed_str: str) -> List[str]:
     """identify required packages for install"""
     packages = []
-    if not subp.which("lxd"):
-        packages.append("lxd")
-
     # binary for pool creation must be available for the requested backend:
     # zfs, lvcreate, mkfs.btrfs
     storage_drivers: List[str] = []

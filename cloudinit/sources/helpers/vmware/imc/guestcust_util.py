@@ -614,6 +614,7 @@ def is_cust_plugin_available():
         "/usr/lib64/open-vm-tools",
         "/usr/lib/x86_64-linux-gnu/open-vm-tools",
         "/usr/lib/aarch64-linux-gnu/open-vm-tools",
+        "/usr/lib/i386-linux-gnu/open-vm-tools",
     )
     cust_plugin = "libdeployPkgPlugin.so"
     for path in search_paths:
@@ -644,6 +645,3 @@ def set_cust_error_status(prefix, error, event, cust_cfg):
     util.logexc(logger, "%s: %s", prefix, error)
     set_customization_status(GuestCustStateEnum.GUESTCUST_STATE_RUNNING, event)
     set_gc_status(cust_cfg, prefix)
-
-
-# vi: ts=4 expandtab

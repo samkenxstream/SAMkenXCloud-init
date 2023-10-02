@@ -188,6 +188,7 @@ class IntegrationInstance:
             local_path=integration_settings.CLOUD_INIT_SOURCE,
             remote_path=remote_path,
         )
+        assert self.execute("apt-get install -qy python3-passlib").ok
         assert self.execute("dpkg -i {path}".format(path=remote_path)).ok
 
     @retry(tries=30, delay=1)
@@ -200,7 +201,12 @@ class IntegrationInstance:
         if self._ip:
             return self._ip
         try:
-            self._ip = self.instance.ip
+            # in some cases that ssh is not used, an address is not assigned
+            if (
+                hasattr(self.instance, "execute_via_ssh")
+                and self.instance.execute_via_ssh
+            ):
+                self._ip = self.instance.ip
         except NotImplementedError:
             self._ip = "Unknown"
         return self._ip

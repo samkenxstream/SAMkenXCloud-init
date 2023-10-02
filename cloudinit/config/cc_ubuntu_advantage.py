@@ -3,12 +3,12 @@
 """ubuntu_advantage: Configure Ubuntu Advantage support services"""
 
 import json
+import logging
 import re
 from textwrap import dedent
 from typing import Any, List
 from urllib.parse import urlparse
 
-from cloudinit import log as logging
 from cloudinit import subp, util
 from cloudinit.cloud import Cloud
 from cloudinit.config import Config
@@ -334,16 +334,9 @@ def configure_ua(token, enable=None):
     # related. We can distinguish them by checking if `service` is non-null
     # or null respectively.
 
-    # pylint: disable=import-error
-    from uaclient.messages import ALREADY_ENABLED
-
-    # pylint: enable=import-error
-
-    UA_MC_ALREADY_ENABLED = ALREADY_ENABLED.name
-
     enable_errors: List[dict] = []
     for err in enable_resp.get("errors", []):
-        if err["message_code"] == UA_MC_ALREADY_ENABLED:
+        if err["message_code"] == "service-already-enabled":
             LOG.debug("Service `%s` already enabled.", err["service"])
             continue
         enable_errors.append(err)
@@ -519,6 +512,3 @@ def handle(name: str, cfg: Config, cloud: Cloud, args: list) -> None:
     #    `{"ubuntu_advantage": "features": {"disable_auto_attach": True}}`
     elif not ua_section.keys() <= {"features"}:
         _attach(ua_section)
-
-
-# vi: ts=4 expandtab

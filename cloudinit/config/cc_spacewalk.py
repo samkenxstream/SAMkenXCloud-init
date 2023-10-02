@@ -25,7 +25,7 @@ meta: MetaSchema = {
     "name": "Spacewalk",
     "title": "Install and configure spacewalk",
     "description": MODULE_DESCRIPTION,
-    "distros": ["rhel", "fedora"],
+    "distros": ["rhel", "fedora", "openeuler"],
     "frequency": PER_INSTANCE,
     "examples": [
         dedent(
@@ -112,6 +112,3 @@ def handle(name: str, cfg: Config, cloud: Cloud, args: list) -> None:
             " was not found in configuration",
             name,
         )
-
-
-# vi: ts=4 expandtab

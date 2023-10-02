@@ -2,12 +2,12 @@
 #
 # This file is part of cloud-init. See LICENSE file for license information.
 
+import logging
 from time import time
 from typing import Dict, Optional
 
 import requests
 
-from cloudinit import log as logging
 from cloudinit import util
 from cloudinit.sources.helpers.azure import report_diagnostic_event
 from cloudinit.url_helper import UrlError, readurl
@@ -94,7 +94,7 @@ def _fetch_url(
     *,
     retry_deadline: float,
     log_response: bool = True,
-    timeout: int = 2,
+    timeout: int = 30,
 ) -> bytes:
     """Fetch URL from IMDS.
 
@@ -194,7 +194,7 @@ def fetch_reprovision_data() -> bytes:
         headers={"Metadata": "true"},
         infinite=True,
         log_req_resp=False,
-        timeout=2,
+        timeout=30,
     )
 
     report_diagnostic_event(

@@ -536,7 +536,7 @@ OS_SAMPLES = [
             (
                 "etc/sysconfig/network/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=static
 IPADDR=172.19.1.34
@@ -548,7 +548,7 @@ STARTMODE=auto
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -556,7 +556,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -576,7 +576,7 @@ dns = none
             (
                 "etc/sysconfig/network-scripts/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=none
 DEFROUTE=yes
@@ -594,7 +594,7 @@ USERCTL=no
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -602,7 +602,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -697,7 +697,7 @@ route1=0.0.0.0/0,172.19.3.254
             (
                 "etc/sysconfig/network/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=static
 IPADDR=172.19.1.34
@@ -711,7 +711,7 @@ STARTMODE=auto
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -719,7 +719,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -739,7 +739,7 @@ dns = none
             (
                 "etc/sysconfig/network-scripts/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=none
 DEFROUTE=yes
@@ -759,7 +759,7 @@ USERCTL=no
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -767,7 +767,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -854,7 +854,7 @@ dns = none
             (
                 "etc/sysconfig/network/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=static
 IPADDR=172.19.1.34
@@ -869,7 +869,7 @@ STARTMODE=auto
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -877,7 +877,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -897,7 +897,7 @@ dns = none
             (
                 "etc/sysconfig/network-scripts/ifcfg-eth0",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=none
 DEFROUTE=yes
@@ -921,7 +921,7 @@ USERCTL=no
             (
                 "etc/resolv.conf",
                 """
-; Created by cloud-init on instance boot automatically, do not edit.
+; Created by cloud-init automatically, do not edit.
 ;
 nameserver 172.19.0.12
 """.lstrip(),
@@ -929,7 +929,7 @@ nameserver 172.19.0.12
             (
                 "etc/NetworkManager/conf.d/99-cloud-init.conf",
                 """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 [main]
 dns = none
@@ -1932,6 +1932,9 @@ NETWORK_CONFIGS = {
                 method=auto
                 may-fail=false
 
+                [ipv4]
+                method=disabled
+
                 """
             ),
         },
@@ -2044,6 +2047,9 @@ NETWORK_CONFIGS = {
                 method=auto
                 may-fail=false
 
+                [ipv4]
+                method=disabled
+
                 """
             ),
         },
@@ -2091,11 +2097,12 @@ NETWORK_CONFIGS = {
         "expected_sysconfig_rhel": {
             "ifcfg-iface0": textwrap.dedent(
                 """\
-            BOOTPROTO=dhcp
+            BOOTPROTO=none
             DEVICE=iface0
             DHCPV6C=yes
             IPV6INIT=yes
             IPV6_AUTOCONF=no
+            IPV6_FAILURE_FATAL=yes
             IPV6_FORCE_ACCEPT_RA=yes
             DEVICE=iface0
             NM_CONTROLLED=no
@@ -3435,7 +3442,7 @@ iface bond0 inet6 static
             ),
             "route6-bond0": textwrap.dedent(
                 """\
-        # Created by cloud-init on instance boot automatically, do not edit.
+        # Created by cloud-init automatically, do not edit.
         #
         2001:67c::/32 via 2001:67c:1562::1  dev bond0
         3001:67c::/32 via 3001:67c:15::1 metric 10000 dev bond0
@@ -4291,11 +4298,16 @@ class TestGenerateFallbackConfig(CiTestCase):
         }
         self.assertEqual(expected, network_cfg)
 
+    @mock.patch("cloudinit.net.openvswitch_is_installed", return_value=False)
     @mock.patch("cloudinit.net.sys_dev_path")
     @mock.patch("cloudinit.net.read_sys_net")
     @mock.patch("cloudinit.net.get_devicelist")
     def test_device_driver(
-        self, mock_get_devicelist, mock_read_sys_net, mock_sys_dev_path
+        self,
+        mock_get_devicelist,
+        mock_read_sys_net,
+        mock_sys_dev_path,
+        _ovs_is_installed,
     ):
         devices = {
             "eth0": {
@@ -4375,11 +4387,16 @@ iface eth0 inet dhcp
         ]
         self.assertEqual(", ".join(expected_rule) + "\n", contents.lstrip())
 
+    @mock.patch("cloudinit.net.openvswitch_is_installed", return_value=False)
     @mock.patch("cloudinit.net.sys_dev_path")
     @mock.patch("cloudinit.net.read_sys_net")
     @mock.patch("cloudinit.net.get_devicelist")
     def test_hv_netvsc_vf_filter(
-        self, mock_get_devicelist, mock_read_sys_net, mock_sys_dev_path
+        self,
+        mock_get_devicelist,
+        mock_read_sys_net,
+        mock_sys_dev_path,
+        _ovs_installed,
     ):
         devices = {
             "eth1": {
@@ -4566,10 +4583,7 @@ class TestRhelSysConfigRendering(CiTestCase):
     with_logs = True
 
     scripts_dir = "/etc/sysconfig/network-scripts"
-    header = (
-        "# Created by cloud-init on instance boot automatically, "
-        "do not edit.\n#\n"
-    )
+    header = "# Created by cloud-init automatically, do not edit.\n#\n"
 
     expected_name = "expected_sysconfig_rhel"
 
@@ -4665,7 +4679,7 @@ class TestRhelSysConfigRendering(CiTestCase):
         with open(os.path.join(render_dir, render_file)) as fh:
             content = fh.read()
             expected_content = """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=dhcp
 DEVICE=eth1000
@@ -4873,7 +4887,7 @@ USERCTL=no
         nspath = "/etc/sysconfig/network-scripts/"
         self.assertNotIn(nspath + "ifcfg-lo", found.keys())
         expected = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=none
 DEFROUTE=yes
@@ -4903,7 +4917,7 @@ USERCTL=no
         nspath = "/etc/sysconfig/network-scripts/"
         self.assertNotIn(nspath + "ifcfg-lo", found.keys())
         expected_i1 = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=none
 DEFROUTE=yes
@@ -4920,7 +4934,7 @@ USERCTL=no
 """
         self.assertEqual(expected_i1, found[nspath + "ifcfg-eth0"])
         expected_i2 = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=dhcp
 DEVICE=eth1
@@ -4948,7 +4962,7 @@ USERCTL=no
         nspath = "/etc/sysconfig/network-scripts/"
         self.assertNotIn(nspath + "ifcfg-lo", found.keys())
         expected = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=dhcp
 DEVICE=eth0
@@ -5395,7 +5409,7 @@ USERCTL=no
         expected = {
             "ifcfg-eth0": textwrap.dedent(
                 """\
-                # Created by cloud-init on instance boot automatically, do not edit.
+                # Created by cloud-init automatically, do not edit.
                 #
                 BOOTPROTO=none
                 DEFROUTE=yes
@@ -5421,7 +5435,7 @@ USERCTL=no
             ),
             "route-eth0": textwrap.dedent(
                 """\
-                # Created by cloud-init on instance boot automatically, do not edit.
+                # Created by cloud-init automatically, do not edit.
                 #
                 ADDRESS0=10.54.0.1
                 GATEWAY0=0.0.0.0
@@ -5430,14 +5444,14 @@ USERCTL=no
             ),
             "route6-eth0": textwrap.dedent(
                 """\
-                # Created by cloud-init on instance boot automatically, do not edit.
+                # Created by cloud-init automatically, do not edit.
                 #
                 2a00:1730:fff9:100::1/128 via ::0  dev eth0
                 ::0/0 via 2a00:1730:fff9:100::1  dev eth0
                 """  # noqa: E501
             ),
         }
-        log.setupLogging()
+        log.setup_logging()
 
         found = self._render_and_read(network_config=v2_data)
         self._compare_files_to_expected(expected, found)
@@ -5491,10 +5505,7 @@ class TestOpenSuseSysConfigRendering(CiTestCase):
     with_logs = True
 
     scripts_dir = "/etc/sysconfig/network"
-    header = (
-        "# Created by cloud-init on instance boot automatically, "
-        "do not edit.\n#\n"
-    )
+    header = "# Created by cloud-init automatically, do not edit.\n#\n"
 
     expected_name = "expected_sysconfig_opensuse"
 
@@ -5581,7 +5592,7 @@ class TestOpenSuseSysConfigRendering(CiTestCase):
         with open(os.path.join(render_dir, render_file)) as fh:
             content = fh.read()
             expected_content = """
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=dhcp4
 LLADDR=07-1c-c6-75-a4-be
@@ -5699,7 +5710,7 @@ STARTMODE=auto
         nspath = "/etc/sysconfig/network/"
         self.assertNotIn(nspath + "ifcfg-lo", found.keys())
         expected = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=static
 IPADDR=10.0.2.15
@@ -5727,7 +5738,7 @@ STARTMODE=auto
         nspath = "/etc/sysconfig/network/"
         self.assertNotIn(nspath + "ifcfg-lo", found.keys())
         expected = """\
-# Created by cloud-init on instance boot automatically, do not edit.
+# Created by cloud-init automatically, do not edit.
 #
 BOOTPROTO=dhcp
 STARTMODE=auto
@@ -5858,8 +5869,24 @@ class TestNetworkManagerRendering(CiTestCase):
     with_logs = True
 
     scripts_dir = "/etc/NetworkManager/system-connections"
+    conf_dir = "/etc/NetworkManager/conf.d"
 
     expected_name = "expected_network_manager"
+
+    expected_conf_d = {
+        "30-cloud-init-ip6-addr-gen-mode.conf": textwrap.dedent(
+            """\
+                # This is generated by cloud-init. Do not edit.
+                #
+                [.config]
+                  enable=nm-version-min:1.40
+                [connection.30-cloud-init-ip6-addr-gen-mode]
+                  # Select EUI64 to be used if the profile does not specify it.
+                  ipv6.addr-gen-mode=0
+
+                """
+        ),
+    }
 
     def _get_renderer(self):
         return network_manager.Renderer()
@@ -5879,11 +5906,19 @@ class TestNetworkManagerRendering(CiTestCase):
         renderer.render_network_state(ns, target=dir)
         return dir2dict(dir)
 
-    def _compare_files_to_expected(self, expected, found):
+    def _compare_files_to_expected(
+        self, expected_scripts, expected_conf, found
+    ):
         orig_maxdiff = self.maxDiff
-        expected_d = dict(
-            (os.path.join(self.scripts_dir, k), v) for k, v in expected.items()
+        conf_d = dict(
+            (os.path.join(self.conf_dir, k), v)
+            for k, v in expected_conf.items()
         )
+        scripts_d = dict(
+            (os.path.join(self.scripts_dir, k), v)
+            for k, v in expected_scripts.items()
+        )
+        expected_d = {**conf_d, **scripts_d}
 
         try:
             self.maxDiff = None
@@ -5944,6 +5979,7 @@ class TestNetworkManagerRendering(CiTestCase):
                 """
                 ),
             },
+            self.expected_conf_d,
             found,
         )
 
@@ -5999,8 +6035,9 @@ class TestNetworkManagerRendering(CiTestCase):
                 gateway=10.0.2.2
 
                 """
-                ),
+                )
             },
+            self.expected_conf_d,
             found,
         )
 
@@ -6036,33 +6073,44 @@ class TestNetworkManagerRendering(CiTestCase):
                 """
                 ),
             },
+            self.expected_conf_d,
             found,
         )
 
     def test_bond_config(self):
         entry = NETWORK_CONFIGS["bond"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_vlan_config(self):
         entry = NETWORK_CONFIGS["vlan"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_bridge_config(self):
         entry = NETWORK_CONFIGS["bridge"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_manual_config(self):
         entry = NETWORK_CONFIGS["manual"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_all_config(self):
         entry = NETWORK_CONFIGS["all"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
         self.assertNotIn(
             "WARNING: Network config: ignoring eth0.101 device-level mtu",
             self.logs.getvalue(),
@@ -6071,17 +6119,23 @@ class TestNetworkManagerRendering(CiTestCase):
     def test_small_config_v1(self):
         entry = NETWORK_CONFIGS["small_v1"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_small_config_v2(self):
         entry = NETWORK_CONFIGS["small_v2"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_v4_and_v6_static_config(self):
         entry = NETWORK_CONFIGS["v4_and_v6_static"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
         expected_msg = (
             "WARNING: Network config: ignoring iface0 device-level mtu:8999"
             " because ipv4 subnet-level mtu:9000 provided."
@@ -6091,41 +6145,55 @@ class TestNetworkManagerRendering(CiTestCase):
     def test_dhcpv6_only_config(self):
         entry = NETWORK_CONFIGS["dhcpv6_only"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_simple_render_ipv6_slaac(self):
         entry = NETWORK_CONFIGS["ipv6_slaac"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_dhcpv6_stateless_config(self):
         entry = NETWORK_CONFIGS["dhcpv6_stateless"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_wakeonlan_disabled_config_v2(self):
         entry = NETWORK_CONFIGS["wakeonlan_disabled"]
         found = self._render_and_read(
             network_config=yaml.load(entry["yaml_v2"])
         )
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_wakeonlan_enabled_config_v2(self):
         entry = NETWORK_CONFIGS["wakeonlan_enabled"]
         found = self._render_and_read(
             network_config=yaml.load(entry["yaml_v2"])
         )
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_render_v4_and_v6(self):
         entry = NETWORK_CONFIGS["v4_and_v6"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
     def test_render_v6_and_v4(self):
         entry = NETWORK_CONFIGS["v6_and_v4"]
         found = self._render_and_read(network_config=yaml.load(entry["yaml"]))
-        self._compare_files_to_expected(entry[self.expected_name], found)
+        self._compare_files_to_expected(
+            entry[self.expected_name], self.expected_conf_d, found
+        )
 
 
 @mock.patch(
@@ -6556,6 +6624,7 @@ class TestNetplanNetRendering:
     )
     @mock.patch("cloudinit.net.util.get_cmdline", return_value="root=myroot")
     @mock.patch("cloudinit.net.netplan._clean_default")
+    @mock.patch("cloudinit.net.openvswitch_is_installed", return_value=False)
     @mock.patch("cloudinit.net.sys_dev_path")
     @mock.patch("cloudinit.net.read_sys_net")
     @mock.patch("cloudinit.net.get_devicelist")
@@ -6564,6 +6633,7 @@ class TestNetplanNetRendering:
         mock_get_devicelist,
         mock_read_sys_net,
         mock_sys_dev_path,
+        _openvswitch_is_installed,
         mock_clean_default,
         m_get_cmdline,
         m_renderer_features,
@@ -8097,6 +8167,7 @@ class TestGetInterfaces(CiTestCase):
             "eth1": "aa:aa:aa:aa:aa:01",
             "tun0": None,
         },
+        "masters": {},
         "drivers": {
             "enp0s1": "virtio_net",
             "enp0s2": "e1000",
@@ -8124,6 +8195,9 @@ class TestGetInterfaces(CiTestCase):
     def _se_get_interface_mac(self, name):
         return self.data["macs"][name]
 
+    def _se_get_master(self, name):
+        return self.data["masters"].get(name)
+
     def _se_is_bridge(self, name):
         return name in self.data["bridges"]
 
@@ -8145,6 +8219,7 @@ class TestGetInterfaces(CiTestCase):
         mocks = (
             "get_devicelist",
             "get_interface_mac",
+            "get_master",
             "is_bridge",
             "interface_has_own_mac",
             "is_vlan",
@@ -8910,6 +8985,3 @@ class TestNetworkState(CiTestCase):
         self.assertEqual(
             "10.1.21.255", bcast_addr("255.255.255.0", "10.1.21.4")
         )
-
-
-# vi: ts=4 expandtab

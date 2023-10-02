@@ -65,11 +65,6 @@ def fake_uaclient(mocker):
     )
     sys.modules["uaclient.api.exceptions"] = _exceptions
 
-    # Messages
-    m_messages = mock.Mock()
-    m_messages.ALREADY_ENABLED.name = "service-already-enabled"
-    sys.modules["uaclient.messages"] = m_messages
-
 
 @pytest.mark.usefixtures("fake_uaclient")
 @mock.patch(f"{MPATH}.subp.subp")
@@ -1421,6 +1416,3 @@ class TestSetUAConfig:
         assert "https://user:pass@some-proxy:8088" not in caplog.text
         assert "Disabling UA config for https_proxy\n" in caplog.text
         assert 'Failure enabling/disabling "https_proxy":\n' in caplog.text
-
-
-# vi: ts=4 expandtab
